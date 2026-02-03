@@ -223,7 +223,7 @@ http://127.0.0.1:8000/db/ping
 ```json
 {
   "db": "ok",
-  "tables": ["skills", "tasks", "team_members", "team_member_skills", "task_required_skills"]
+  "tables": ["allocation_runs", "allocations", "roles", "skills", "task_dependencies", "task_required_skills", "tasks", "team_member_skills", "team_members", "time_slots"]
 }
 ```
 
@@ -257,7 +257,7 @@ cd backend
 py seed.py
 ```
 
-After seeding, tables like `team_members`, `tasks`, and `skills` will contain sample data.
+After seeding, tables like `team_members`, `time_slots`, `tasks`, and `skills` will contain sample data.
 
 **Demo Data Previews:**
 

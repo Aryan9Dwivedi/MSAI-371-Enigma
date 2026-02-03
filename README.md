@@ -22,7 +22,7 @@ KRAFT combines knowledge representation with reasoning logic to solve the task a
 |-------|-----------|
 | **Frontend** | React + TypeScript + Vite + TailwindCSS v4 |
 | **Backend** | FastAPI + SQLAlchemy |
-| **Database** | SQLite (development), PostgreSQL (optional, future) |
+| **Database** | SQLite (via SQLAlchemy ORM) |
 | **State Management** | React Query |
 
 ---
@@ -71,8 +71,9 @@ This guide includes step-by-step instructions for:
 ## 📚 Documentation
 
 - **`docs/SETUP.md`** — Complete setup and installation guide
+- **`docs/DB_SCHEMA.md`** — Database schema (tables, fields, relations) — single source of truth
+- **`docs/ARCHITECTURE.md`** — System design and reasoning logic
 - **`docs/CONTRIBUTING.md`** — Contribution guidelines and branch workflow
-- **`docs/ARCHITECTURE.md`** — System design and reasoning logic (coming soon)
 
 ---
 
@@ -104,11 +105,16 @@ Run the frontend and backend in separate terminals simultaneously for local deve
 
 ## 🗄️ Database
 
-KRAFT uses **SQLite** for local development. The database is automatically created on first backend startup.
+KRAFT uses **SQLite** for local development. Data is stored in `backend/kraft.db`. The database is created automatically on first backend startup.
+
+**Schema:**
+- Full reference: `docs/DB_SCHEMA.md`
+- Main tables: TeamMember, Skill, Task, Role, TimeSlot, AllocationRun, Allocation + link tables
+- Members have skills + proficiency + time_slots; tasks require skills + proficiency_minimum + prerequisite tasks done (task_dependencies)
 
 **Access the database:**
 - Use the **SQLite** VS Code extension (by alexcvzz) to browse tables and data
-- View API schema at `http://localhost:8000/docs`
+- View API docs at `http://localhost:8000/docs`
 
 **Seed sample data (optional):**
 ```bash
@@ -138,6 +144,7 @@ python seed.py
 | Resource | Purpose |
 |----------|---------|
 | `docs/SETUP.md` | Complete setup instructions |
+| `docs/DB_SCHEMA.md` | Database schema reference |
 | `http://localhost:8000/docs` | Interactive API documentation (Swagger) |
 | `backend/.env.example` | Backend environment variables template |
 | `frontend/.env.example` | Frontend environment variables template |

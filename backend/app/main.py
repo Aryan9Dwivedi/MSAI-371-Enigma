@@ -10,7 +10,7 @@ import app.db.models  # noqa: F401
 
 app = FastAPI(title="KRAFT API", version="0.1.0")
 
-# Temporary MVP: auto-create tables on startup (later replaced by Alembic migrations)
+# auto-create tables on startup (we'll use alembic later)
 Base.metadata.create_all(bind=engine)
 
 app.add_middleware(
