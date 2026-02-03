@@ -1,39 +1,29 @@
-**Welcome to your Base44 project** 
+# MSAI-371 Enigma
 
-**About**
+This repository contains the frontend implementation for **MSAI-371 Enigma**, a static web application built and deployed independently as part of the MSAI-371 coursework.
 
-View and Edit  your app on [Base44.com](http://Base44.com) 
+The application is implemented using **React + Vite** and is deployed via **GitHub Pages** using GitHub Actions.
 
-This project contains everything you need to run your app locally.
+---
 
-**Edit the code in your local development environment**
+## Live Demo
 
-Any change pushed to the repo will also be reflected in the Base44 Builder.
+https://aryan9dwivedi.github.io/MSAI-371-Enigma/
 
-**Prerequisites:** 
+> Note: The app uses hash-based routing (`#/route`) to ensure compatibility with GitHub Pages.
 
-1. Clone the repository using the project's Git URL 
-2. Navigate to the project directory
-3. Install dependencies: `npm install`
-4. Create an `.env.local` file and set the right environment variables
+---
 
-```
-VITE_BASE44_APP_ID=your_app_id
-VITE_BASE44_APP_BASE_URL=your_backend_url
+## Tech Stack
 
-e.g.
-VITE_BASE44_APP_ID=cbef744a8545c389ef439ea6
-VITE_BASE44_APP_BASE_URL=https://my-to-do-list-81bfaad7.base44.app
-```
+- React
+- Vite
+- Tailwind CSS
+- React Router (HashRouter)
+- GitHub Actions
+- GitHub Pages
 
-Run the app: `npm run dev`
+---
 
-**Publish your changes**
+## Project Structure
 
-Open [Base44.com](http://Base44.com) and click on Publish.
-
-**Docs & Support**
-
-Documentation: [https://docs.base44.com/Integrations/Using-GitHub](https://docs.base44.com/Integrations/Using-GitHub)
-
-Support: [https://app.base44.com/support](https://app.base44.com/support)
