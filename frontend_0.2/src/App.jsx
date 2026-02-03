@@ -19,9 +19,13 @@ const LayoutWrapper = ({ children, currentPageName }) =>
     <>{children}</>
   );
 
+/**
+ * Routes that work on GitHub Pages (HashRouter)
+ */
 const AppRoutes = () => {
   return (
     <Routes>
+      {/* Home */}
       <Route
         path="/"
         element={
@@ -30,6 +34,34 @@ const AppRoutes = () => {
           </LayoutWrapper>
         }
       />
+
+      {/* Section routes (prevent 404 for hash links) */}
+      <Route
+        path="/features"
+        element={
+          <LayoutWrapper currentPageName={mainPageKey}>
+            <MainPage />
+          </LayoutWrapper>
+        }
+      />
+      <Route
+        path="/how-it-works"
+        element={
+          <LayoutWrapper currentPageName={mainPageKey}>
+            <MainPage />
+          </LayoutWrapper>
+        }
+      />
+      <Route
+        path="/preview"
+        element={
+          <LayoutWrapper currentPageName={mainPageKey}>
+            <MainPage />
+          </LayoutWrapper>
+        }
+      />
+
+      {/* Generated pages */}
       {Object.entries(Pages).map(([path, Page]) => (
         <Route
           key={path}
@@ -41,6 +73,8 @@ const AppRoutes = () => {
           }
         />
       ))}
+
+      {/* 404 */}
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );
@@ -61,7 +95,8 @@ const AuthenticatedApp = () => {
   if (authError) {
     if (authError.type === "user_not_registered") {
       return <UserNotRegisteredError />;
-    } else if (authError.type === "auth_required") {
+    }
+    if (authError.type === "auth_required") {
       navigateToLogin();
       return null;
     }
@@ -71,7 +106,7 @@ const AuthenticatedApp = () => {
 };
 
 function App() {
-  // For GitHub Pages static hosting: set VITE_NO_AUTH=true in .env.production
+  // Static GitHub Pages mode
   const noAuth = import.meta.env.VITE_NO_AUTH === "true";
 
   const core = (
