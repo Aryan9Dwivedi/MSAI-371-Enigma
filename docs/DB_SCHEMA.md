@@ -14,27 +14,29 @@ Flow: people have skills + time slots → tasks need skills + may depend on othe
 
 ## Diagram
 
+Table relationships (connected via foreign keys):
+
 ```
-         Role
-           │
-           ▼
-    ┌──────────────┐
-    │  TeamMember  │
-    └──────┬───────┘
-           │
-           ├── time_slots
-           ├── team_member_skills ───► Skill
-           │                              │
-           │                              │ task_required_skills
-           │                              ▼
-           │                         ┌─────────┐    task_dependencies
-           │                         │  Task   │◄─── (B waits for A)
-           │                         └────┬────┘
-           │                              │
-           ▼                              ▼
-    ┌──────────────┐              ┌──────────────┐
-    │  Allocation  │◄─────────────│ AllocationRun│
-    └──────────────┘              └──────────────┘
+Role
+    ↓ one role → many members
+TeamMember
+    ├── time_slots (member's available time slots)
+    ├── team_member_skills ──→ Skill (which skills each member has)
+    └── allocations (which tasks each member has been assigned)
+
+Skill
+    └── task_required_skills ──→ Task (which skills each task needs)
+
+Task
+    ├── task_dependencies (B depends on A)
+    └── allocations (which tasks have been assigned to whom)
+
+AllocationRun (one allocation run)
+    └── allocations (all assignments from this run)
+
+Allocation
+    ├── → TeamMember
+    └── → Task
 ```
 
 ---
@@ -50,7 +52,7 @@ Flow: people have skills + time slots → tasks need skills + may depend on othe
 | Not overloaded | allocations, workload_limit_hours | current active task hours + new task ≤ workload_limit_hours |
 | Prereqs done | task_dependencies, task status | all depends_on_task_id rows have status = done |
 
-**Soft** (prefer but not required): higher proficiency, more even workload, match work_style_preference.
+**Soft** (prefer but not required): higher proficiency, more years of experience, more even workload, match work_style_preference, team/department alignment.
 
 **Output:** allocation_runs (one per run) + allocations (person, task, explanation).
 
@@ -82,9 +84,13 @@ People on the team.
 | name | String |
 | email | String |
 | role_id | FK → roles |
+| team | String (e.g., "Engineering", "Marketing", "Product") |
+| department | String (e.g., "Software Development", "Data Science") |
 | work_style_preference | String |
 | calendar_availability | String (legacy, use time_slots instead) |
 | workload_limit_hours | Float |
+| resume_text | Text (extracted/parsed resume content) |
+| resume_file_path | String (path to uploaded resume file) |
 | created_at, updated_at | DateTime |
 
 ---
@@ -125,6 +131,7 @@ Who has what skill and at what level. Same skill, different people = different l
 | team_member_id | FK |
 | skill_id | FK |
 | proficiency_level | String (beginner/intermediate/advanced) |
+| years_of_experience | Float (years of experience with this specific skill) |
 
 ---
 

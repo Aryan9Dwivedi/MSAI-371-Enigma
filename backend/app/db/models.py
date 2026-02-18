@@ -34,6 +34,7 @@ class TeamMemberSkill(Base):
     team_member_id = Column(ForeignKey("team_members.id"), primary_key=True)
     skill_id = Column(ForeignKey("skills.id"), primary_key=True)
     proficiency_level = Column(String, nullable=True)  # beginner/intermediate/advanced
+    years_of_experience = Column(Float, nullable=True)  # years of experience with this specific skill
 
     team_member = relationship("TeamMember", back_populates="skill_associations")
     skill = relationship("Skill", back_populates="member_associations")
@@ -72,9 +73,17 @@ class TeamMember(Base):
     email = Column(String(255), nullable=True)
     role_id = Column(ForeignKey("roles.id"), nullable=True)
 
+    # Team/Department organization
+    team = Column(String(100), nullable=True)  # e.g., "Engineering", "Marketing", "Product"
+    department = Column(String(100), nullable=True)  # e.g., "Software Development", "Data Science"
+
     work_style_preference = Column(String(255), nullable=True)
     calendar_availability = Column(String(500), nullable=True)  # legacy fallback, prefer time_slots
     workload_limit_hours = Column(Float, nullable=True)  # weekly cap
+
+    # Resume-related fields
+    resume_text = Column(Text, nullable=True)  # extracted/parsed resume content
+    resume_file_path = Column(String(500), nullable=True)  # path to uploaded resume file
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
