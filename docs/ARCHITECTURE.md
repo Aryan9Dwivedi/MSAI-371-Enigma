@@ -230,17 +230,15 @@ This supports reasoning such as:
 
 
 
-\## 6) Reasoning Layer (Planned)
+\## 6) Reasoning Layer
 
-
-
-The reasoning engine will be implemented in `backend/app/services/`.
+The reasoning engine is implemented in `backend/app/services/reasoning.py`.
 
 
 
 \### Inputs
 
-\- Tasks + constraints
+\- Tasks + constraints (from DB; optionally filtered by `task_ids` / `team_member_ids`)
 
 \- Team members + skills + availability
 
@@ -248,19 +246,19 @@ The reasoning engine will be implemented in `backend/app/services/`.
 
 \### Output
 
-\- Task assignments with explanation
+\- Task assignments with explanation (constraints satisfied, why preferred/rejected)
 
 
 
-\### Reasoning Types (planned)
+\### Reasoning Types
 
-\- Constraint satisfaction (hard constraints)
+\- **Constraint satisfaction** — members must have all required skills for a task
 
-\- Rule-based filtering (required skills / deadlines)
+\- **Rule-based filtering** — required skills, workload eligibility
 
-\- Weighted scoring (fairness + workload balance)
+\- **Weighted scoring** — workload balance (prefer less-loaded members)
 
-\- Optional: graph-based reasoning over skill/task relationships
+\- **Explainability** — per-candidate reasons, rejection explanations
 
 
 
