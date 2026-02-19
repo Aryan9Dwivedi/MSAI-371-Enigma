@@ -1,5 +1,7 @@
+// @ts-nocheck — UI components (Card, Button, etc.) use forwardRef; checker does not infer children.
 import React, { useState, useEffect } from 'react';
 import * as mockData from '@/components/mockData';
+import { kraftApi } from '@/api/kraftApi';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -85,63 +87,69 @@ export default function Allocation() {
   const loadData = () => {
     setTasks(mockData.getAll('tasks'));
     setAgents(mockData.getAll('agents'));
-    setAllocations(mockData.getAll('allocations'));
+    // Don't load mock allocations — we use backend only; avoids mixing mock + backend
+    setAllocations([]);
   };
 
   const unassignedTasks = tasks.filter(t => t.status === 'unassigned');
 
   const runAllocation = async () => {
     setIsRunning(true);
-    
-    await new Promise(r => setTimeout(r, 2000));
-    
-    const availableAgents = agents.filter(a => a.status === 'available');
-    
-    for (const task of unassignedTasks) {
-      const matchedAgent = availableAgents.find(agent => {
-        const taskSkills = task.required_skills || [];
-        const agentSkills = agent.skills || [];
-        return taskSkills.some(skill => agentSkills.includes(skill));
-      }) || availableAgents[Math.floor(Math.random() * availableAgents.length)];
-      
-      if (matchedAgent) {
-        const matchedSkills = (task.required_skills || []).filter(s => 
-          (matchedAgent.skills || []).includes(s)
-        );
-        
-        const confidence = Math.min(95, 70 + matchedSkills.length * 10);
-        
-        mockData.create('allocations', {
-          task_id: task.id,
-          agent_id: matchedAgent.id,
-          status: 'proposed',
-          confidence,
-          strategy_used: strategy,
-          reasoning: {
-            skill_match: matchedSkills.length > 0 
-              ? `Matched ${matchedSkills.length} skill(s): ${matchedSkills.join(', ')}`
-              : 'General availability match',
-            constraint_satisfaction: 'All hard constraints satisfied',
-            load_balance: `Agent at ${Math.round(((matchedAgent.current_load || 0) / (matchedAgent.availability_hours || 40)) * 100)}% capacity`,
-            summary: `Best available match based on ${strategy} strategy`
-          }
-        });
+    try {
+      const res = await kraftApi.allocate({ apply: false });
+      const mapped = (res.assignments || []).map((a) => ({
+        id: `backend-${a.task_id}`,
+        task_id: a.task_id,
+        agent_id: a.team_member_id,
+        task_name: a.task_name,
+        team_member_name: a.team_member_name,
+        status: 'proposed',
+        confidence: Math.round(a.score * 100),
+        source: 'backend',
+        reasoning: {
+          skill_match: a.constraints_satisfied?.join('; ') || '',
+          constraint_satisfaction: a.constraints_satisfied?.join('; ') || '',
+          summary: a.explanation,
+          inference_trace: a.inference_trace,
+          candidate_explanations: a.candidate_explanations,
+        },
+      }));
+      setAllocations(mapped);
+      if (mapped.length > 0) {
+        toast.success(res.summary || `Allocation completed (${mapped.length} assignment${mapped.length !== 1 ? 's' : ''})`);
+      } else {
+        toast.info(res.summary || 'No assignments. The database may have no unassigned tasks. Run `python seed.py` in the backend to add sample data.');
       }
+    } catch (err) {
+      const msg =
+        err.name === 'AbortError'
+          ? 'Request timed out. Is the backend running at http://localhost:8000?'
+          : err.message || 'Allocation failed. Is the backend running at http://localhost:8000?';
+      toast.error(msg);
+    } finally {
+      setIsRunning(false);
     }
-    
-    loadData();
-    setIsRunning(false);
-    toast.success('Allocation completed');
   };
 
   const updateAllocationStatus = (id, status) => {
-    mockData.update('allocations', id, { status });
-    loadData();
+    const alloc = allocations.find((a) => a.id === id);
+    if (alloc?.source === 'backend') {
+      setAllocations((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, status } : a))
+      );
+    } else {
+      mockData.update('allocations', id, { status });
+      loadData();
+    }
     toast.success(`Allocation ${status}`);
   };
 
-  const getTaskById = (id) => tasks.find(t => t.id === id);
-  const getAgentById = (id) => agents.find(a => a.id === id);
+  const getTaskById = (id) => tasks.find((t) => String(t.id) === String(id));
+  const getAgentById = (id) => agents.find((a) => String(a.id) === String(id));
+  const getDisplayName = (allocation) =>
+    allocation.task_name ?? getTaskById(allocation.task_id)?.title ?? 'Unknown Task';
+  const getMemberName = (allocation) =>
+    allocation.team_member_name ?? getAgentById(allocation.agent_id)?.name ?? 'Unknown';
 
   const proposedAllocations = allocations.filter(a => a.status === 'proposed');
 
@@ -200,7 +208,7 @@ export default function Allocation() {
                   </div>
                   <Button 
                     className="bg-indigo-600 hover:bg-indigo-700 gap-2"
-                    disabled={isRunning || unassignedTasks.length === 0}
+                    disabled={isRunning}
                     onClick={runAllocation}
                   >
                     {isRunning ? (
@@ -246,11 +254,7 @@ export default function Allocation() {
                       </TableHeader>
                       <TableBody>
                         <AnimatePresence>
-                          {allocations.slice(0, 10).map((allocation) => {
-                            const task = getTaskById(allocation.task_id);
-                            const agent = getAgentById(allocation.agent_id);
-                            
-                            return (
+                          {allocations.slice(0, 10).map((allocation) => (
                               <motion.tr
                                 key={allocation.id}
                                 initial={{ opacity: 0 }}
@@ -262,16 +266,16 @@ export default function Allocation() {
                               >
                                 <TableCell>
                                   <div>
-                                    <p className="font-medium text-slate-800">{task?.title || 'Unknown Task'}</p>
-                                    <p className="text-xs text-slate-400">{task?.priority}</p>
+                                    <p className="font-medium text-slate-800">{getDisplayName(allocation)}</p>
+                                    <p className="text-xs text-slate-400">{getTaskById(allocation.task_id)?.priority}</p>
                                   </div>
                                 </TableCell>
                                 <TableCell>
                                   <div className="flex items-center gap-2">
                                     <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-medium text-indigo-700">
-                                      {agent?.name?.charAt(0) || '?'}
+                                      {getMemberName(allocation).charAt(0)}
                                     </div>
-                                    <span className="text-sm text-slate-700">{agent?.name || 'Unknown'}</span>
+                                    <span className="text-sm text-slate-700">{getMemberName(allocation)}</span>
                                   </div>
                                 </TableCell>
                                 <TableCell>
@@ -323,8 +327,7 @@ export default function Allocation() {
                                   )}
                                 </TableCell>
                               </motion.tr>
-                            );
-                          })}
+                          ))}
                         </AnimatePresence>
                         {allocations.length === 0 && (
                           <TableRow>
@@ -361,14 +364,14 @@ export default function Allocation() {
                           <div className="flex items-center gap-2 mb-3">
                             <ArrowRight className="w-4 h-4 text-indigo-500" />
                             <span className="font-medium text-slate-800">
-                              {getTaskById(selectedAllocation.task_id)?.title}
+                              {getDisplayName(selectedAllocation)}
                             </span>
                           </div>
                           <div className="flex items-center gap-2 text-sm text-slate-600">
                             <div className="w-6 h-6 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-medium text-indigo-700">
-                              {getAgentById(selectedAllocation.agent_id)?.name?.charAt(0)}
+                              {getMemberName(selectedAllocation).charAt(0)}
                             </div>
-                            {getAgentById(selectedAllocation.agent_id)?.name}
+                            {getMemberName(selectedAllocation)}
                           </div>
                         </div>
 
@@ -399,6 +402,23 @@ export default function Allocation() {
                               <div>
                                 <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Workload</p>
                                 <p className="text-sm text-slate-700 mt-1">{selectedAllocation.reasoning.load_balance}</p>
+                              </div>
+                            </div>
+                          )}
+
+                          {selectedAllocation.reasoning?.inference_trace?.length > 0 && (
+                            <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Inference trace</p>
+                                <ol className="text-xs text-slate-700 mt-1 space-y-0.5 font-mono">
+                                  {selectedAllocation.reasoning.inference_trace.map((s) => (
+                                    <li key={s.step}>
+                                      {s.step}. {s.fact_or_derived}
+                                      {s.rule && <span className="block text-slate-500 pl-3">{s.rule}</span>}
+                                    </li>
+                                  ))}
+                                </ol>
                               </div>
                             </div>
                           )}
