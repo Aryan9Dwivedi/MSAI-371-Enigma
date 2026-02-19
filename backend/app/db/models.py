@@ -27,13 +27,14 @@ class TeamMember(Base):
     calendar_availability = Column(String, nullable=True)  # can store JSON later
 
     skills = relationship("Skill", secondary=team_member_skills, back_populates="team_members")
+    assigned_tasks = relationship("Task", back_populates="assignee", foreign_keys="Task.assignee_id")
 
 
 class Skill(Base):
     __tablename__ = "skills"
 
     id = Column(Integer, primary_key=True, index=True)
-    skill_name = Column(String, unique=True, nullable=False)
+    skill_name = Column(String, nullable=False)
     skill_type = Column(String, nullable=False)  # hard/soft
     proficiency_level = Column(String, nullable=True)
 
@@ -50,5 +51,7 @@ class Task(Base):
     deadline = Column(String, nullable=True)
     estimated_time = Column(Float, nullable=True)
     priority_order = Column(Integer, nullable=True)
+    assignee_id = Column(Integer, ForeignKey("team_members.id"), nullable=True)
 
     required_skills = relationship("Skill", secondary=task_required_skills, back_populates="tasks")
+    assignee = relationship("TeamMember", back_populates="assigned_tasks", foreign_keys=[assignee_id])
