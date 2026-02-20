@@ -76,6 +76,10 @@ export default function Allocation() {
   const [agents, setAgents] = useState([]);
   const [allocations, setAllocations] = useState([]);
   const [preStats, setPreStats] = useState(null);
+  const [runExplanation, setRunExplanation] = useState('');
+  const [runUnassignedTasks, setRunUnassignedTasks] = useState([]);
+  const [taskExplanation, setTaskExplanation] = useState('');
+  const [taskExplainLoading, setTaskExplainLoading] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('kraft_role', role);
@@ -109,6 +113,8 @@ export default function Allocation() {
     setIsRunning(true);
     try {
       const res = await kraftApi.allocate({ apply: false });
+      const overallExplanation = res.overall_explanation || res.summary || '';
+      setRunUnassignedTasks(res.unassigned_tasks || []);
       const mapped = (res.assignments || []).map((a) => ({
         id: `backend-${a.task_id}`,
         task_id: a.task_id,
@@ -121,12 +127,15 @@ export default function Allocation() {
         reasoning: {
           skill_match: a.constraints_satisfied?.join('; ') || '',
           constraint_satisfaction: a.constraints_satisfied?.join('; ') || '',
-          summary: a.explanation,
+          summary: overallExplanation,
           inference_trace: a.inference_trace,
           candidate_explanations: a.candidate_explanations,
         },
       }));
       setAllocations(mapped);
+      setRunExplanation(overallExplanation);
+      setSelectedAllocation(mapped[0] || null);
+      setTaskExplanation('');
       if (mapped.length > 0) {
         toast.success(res.summary || `Allocation completed (${mapped.length} assignment${mapped.length !== 1 ? 's' : ''})`);
       } else {
@@ -141,6 +150,58 @@ export default function Allocation() {
       toast.error(msg);
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const loadTaskExplanation = async (allocation) => {
+    if (!allocation) return;
+    setTaskExplainLoading(true);
+    try {
+      const chosen = allocation.reasoning?.candidate_explanations?.find((c) => c.chosen);
+      const eligible = (allocation.reasoning?.candidate_explanations || []).filter((c) => typeof c.score === 'number');
+      const bestAlt = eligible
+        .filter((c) => !c.chosen)
+        .slice()
+        .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      const topRejections = (allocation.reasoning?.candidate_explanations || [])
+        .flatMap((c) => c.rejection_reasons || [])
+        .slice(0, 5);
+
+      const payload = {
+        task_id: allocation.task_id,
+        task_name: getDisplayName(allocation),
+        team_member_id: allocation.agent_id,
+        team_member_name: getMemberName(allocation),
+        constraints_satisfied: allocation.reasoning?.constraint_satisfaction
+          ? allocation.reasoning.constraint_satisfaction.split(';').map((s) => s.trim()).filter(Boolean)
+          : [],
+        chosen_score: chosen?.score ?? null,
+        chosen_reasons: chosen?.reasons || [],
+        best_alternative: bestAlt ? { member_name: bestAlt.member_name, score: `${(bestAlt.score ?? 0).toFixed(3)}` } : null,
+        best_alternative_gap:
+          typeof chosen?.score === 'number' && typeof bestAlt?.score === 'number' ? +(chosen.score - bestAlt.score).toFixed(4) : null,
+        best_alternative_reasons: bestAlt?.reasons || [],
+        scoring_factors: [
+          'workload_fairness',
+          'experience',
+          'availability_richness',
+          'skill_breadth',
+          'delivery_speed',
+        ],
+        hard_rules: [
+          'All required skills must be present (AND match).',
+          'Calendar availability must be present.',
+          'Not overloaded (workload <= 10).',
+        ],
+        top_rejection_reasons: topRejections,
+      };
+
+      const res = await kraftApi.explainTask(payload);
+      setTaskExplanation(res.explanation || '');
+    } catch (e) {
+      setTaskExplanation('');
+    } finally {
+      setTaskExplainLoading(false);
     }
   };
 
@@ -278,7 +339,10 @@ export default function Allocation() {
                                 className={`cursor-pointer hover:bg-slate-50 transition-colors ${
                                   selectedAllocation?.id === allocation.id ? 'bg-indigo-50' : ''
                                 }`}
-                                onClick={() => setSelectedAllocation(allocation)}
+                                onClick={() => {
+                                  setSelectedAllocation(allocation);
+                                  loadTaskExplanation(allocation);
+                                }}
                               >
                                 <TableCell>
                                   <div>
@@ -370,12 +434,42 @@ export default function Allocation() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {selectedAllocation ? (
+                    {runExplanation ? (
                       <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         className="space-y-4"
                       >
+                        <div className="p-3 bg-indigo-100 rounded-lg">
+                          <p className="text-sm text-indigo-800 whitespace-pre-line">
+                            <strong>Run summary:</strong> {runExplanation}
+                          </p>
+                        </div>
+
+                        {runUnassignedTasks?.length > 0 && (
+                          <div className="p-3 bg-white rounded-lg border border-slate-100">
+                            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Unassigned tasks</p>
+                            <ul className="text-sm text-slate-700 mt-1 list-disc pl-5 space-y-0.5">
+                              {runUnassignedTasks.slice(0, 6).map((t) => (
+                                <li key={t.task_id}>{t.task_name}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        <div className="p-3 bg-white rounded-lg border border-slate-100">
+                          <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Task rationale</p>
+                          {taskExplainLoading ? (
+                            <p className="text-sm text-slate-500 mt-1">Generating explanation...</p>
+                          ) : (
+                            <p className="text-sm text-slate-700 mt-1 whitespace-pre-line">
+                              {taskExplanation || 'Click a task to load its explanation.'}
+                            </p>
+                          )}
+                        </div>
+
+                        {selectedAllocation ? (
+                          <>
                         <div className="p-4 bg-white rounded-xl border border-indigo-100">
                           <div className="flex items-center gap-2 mb-3">
                             <ArrowRight className="w-4 h-4 text-indigo-500" />
@@ -439,17 +533,13 @@ export default function Allocation() {
                             </div>
                           )}
                         </div>
-
-                        <div className="p-3 bg-indigo-100 rounded-lg">
-                          <p className="text-sm text-indigo-800">
-                            <strong>Summary:</strong> {selectedAllocation.reasoning?.summary}
-                          </p>
-                        </div>
+                          </>
+                        ) : null}
                       </motion.div>
                     ) : (
                       <div className="text-center py-8 text-slate-400">
                         <Lightbulb className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                        <p className="text-sm">Select an allocation to see the reasoning</p>
+                        <p className="text-sm">Run allocation to see the reasoning summary</p>
                       </div>
                     )}
                   </CardContent>

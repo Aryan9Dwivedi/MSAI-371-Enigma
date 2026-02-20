@@ -21,6 +21,9 @@ from app.schemas.allocation import (
     Assignment,
     AssignmentExplanation,
     InferenceStep,
+    ExplainTaskRequest,
+    ExplainTaskResponse,
+    UnassignedTask,
 )
 from app.services.logic_engine import (
     ConjGoal,
@@ -30,6 +33,7 @@ from app.services.logic_engine import (
     NegGoal,
     Var,
 )
+from app.services.explanation_llm import maybe_generate_run_explanation, maybe_generate_task_explanation
 
 # ---------------------------------------------------------------------------
 # Rule definitions (FOPC) — declarative, interpreted by the logic engine
@@ -373,6 +377,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             assignments=[],
             unassigned_task_ids=[t.id for t in tasks],
             summary="No tasks to allocate or no team members available.",
+            overall_explanation="No allocation was performed because no tasks or no members were available.",
         )
 
     engine = build_engine_from_kb(members, tasks)
@@ -384,6 +389,9 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
 
     assignments: list[Assignment] = []
     unassigned: list[int] = []
+    unassigned_tasks: list[UnassignedTask] = []
+    run_top_assignments: list[dict[str, str]] = []
+    run_rejection_reasons: list[str] = []
 
     for task in tasks:
         # Logical query: find all M such that eligible(M, task.id)
@@ -455,6 +463,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
 
         if not eligible_ids:
             unassigned.append(task.id)
+            unassigned_tasks.append(UnassignedTask(task_id=task.id, task_name=task.task_name))
             continue
 
         # best_candidate: max multi-factor score among eligible
@@ -477,13 +486,14 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             f"{name}({chosen_factors[name]:.2f}×w{chosen_weights[name]:.2f})"
             for name, _ in top_factors
         )
-        explanation = (
+        fallback_explanation = (
             f"{chosen_member.name} assigned to {task.task_name} by logical inference: "
             f"eligible(M,T) proved (can_perform, available, ¬overloaded). "
             f"Then selected by multi-factor scoring (MCDM) with final score {chosen_score:.2f}. "
             f"Predicted completion time for this member: {chosen_pred_h:.2f}h. "
             f"Top contributors: {top_factor_text}."
         )
+        explanation = fallback_explanation
 
         inference_trace = build_chosen_trace(chosen_id, task.id, kb, engine, chosen_score)
 
@@ -498,6 +508,9 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             )
             for c in candidates
         ]
+        for c in candidates:
+            if c.rejection_reasons:
+                run_rejection_reasons.extend(c.rejection_reasons)
 
         assignments.append(
             Assignment(
@@ -511,6 +524,14 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
                 inference_trace=inference_trace,
                 candidate_explanations=candidate_explanations,
             )
+        )
+        run_top_assignments.append(
+            {
+                "task_name": task.task_name,
+                "member_name": chosen_member.name,
+                "score": f"{chosen_score:.3f}",
+                "top_factors": ", ".join(name for name, _ in top_factors),
+            }
         )
 
         if request.apply:
@@ -534,9 +555,103 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     num_assigned = len(assignments)
     num_unassigned = len(unassigned)
     summary = f"Allocated {num_assigned} task(s). {num_unassigned} task(s) could not be assigned (no eligible member)."
+    rejection_counts: dict[str, int] = {}
+    for r in run_rejection_reasons:
+        rejection_counts[r] = rejection_counts.get(r, 0) + 1
+    def _short_reason(reason: str) -> str:
+        if reason.startswith("Missing required skill: "):
+            return "Missing skill: " + reason[len("Missing required skill: ") :]
+        if reason.startswith("Overloaded"):
+            return "Overloaded"
+        if reason.startswith("Not available"):
+            return "Not available"
+        return reason
+
+    unique_rejections = [
+        f"{_short_reason(k)} ({v})"
+        for k, v in sorted(rejection_counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+    top_assignment_text = ", ".join(
+        f"{item['task_name']} -> {item['member_name']} ({item['score']})"
+        for item in run_top_assignments[:3]
+    ) or "No successful assignments"
+    rejection_text = "; ".join(unique_rejections[:3]) if unique_rejections else "No rejection reasons"
+    fallback_overall_explanation = "\n".join(
+        [
+            f"- Outcome: assigned {num_assigned}/{len(tasks)} tasks; unassigned {num_unassigned}.",
+            "- Hard rules: required skills + availability + not overloaded (workload <= 10).",
+            "- Scoring: MCDM (workload_fairness, experience, availability_richness, skill_breadth, delivery_speed).",
+            f"- Rejections: {rejection_text}.",
+        ]
+    )
+    hard_rules = [
+        "All required skills must be present (AND match).",
+        "Calendar availability must be present.",
+        "Not overloaded (workload <= 10).",
+    ]
+    scoring_factors = [
+        "workload_fairness",
+        "experience",
+        "availability_richness",
+        "skill_breadth",
+        "delivery_speed",
+    ]
+    overall_explanation = maybe_generate_run_explanation(
+        total_tasks_considered=len(tasks),
+        assigned_count=num_assigned,
+        unassigned_count=num_unassigned,
+        top_assignments=run_top_assignments,
+        top_rejection_reasons=unique_rejections,
+        scoring_factors=scoring_factors,
+        hard_rules=hard_rules,
+        fallback_text=fallback_overall_explanation,
+    )
 
     return AllocateResponse(
         assignments=assignments,
         unassigned_task_ids=unassigned,
         summary=summary,
+        overall_explanation=overall_explanation,
+        unassigned_tasks=unassigned_tasks,
+    )
+
+
+def explain_task(request: ExplainTaskRequest) -> ExplainTaskResponse:
+    hard_rules = request.hard_rules or [
+        "All required skills must be present (AND match).",
+        "Calendar availability must be present.",
+        "Not overloaded (workload <= 10).",
+    ]
+    scoring_factors = request.scoring_factors or [
+        "workload_fairness",
+        "experience",
+        "availability_richness",
+        "skill_breadth",
+        "delivery_speed",
+    ]
+    fallback = "\n".join(
+        [
+            f"- {request.team_member_name} assigned to {request.task_name}.",
+            "- Eligible via required skills + availability + not overloaded.",
+            f"- Selected by MCDM ({', '.join(scoring_factors)}).",
+        ]
+    )
+    explanation = maybe_generate_task_explanation(
+        task_name=request.task_name,
+        member_name=request.team_member_name,
+        constraints_satisfied=request.constraints_satisfied,
+        chosen_score=request.chosen_score,
+        hard_rules=hard_rules,
+        scoring_factors=scoring_factors,
+        chosen_reasons=request.chosen_reasons,
+        best_alternative=request.best_alternative,
+        best_alternative_gap=request.best_alternative_gap,
+        best_alternative_reasons=request.best_alternative_reasons,
+        top_rejection_reasons=request.top_rejection_reasons,
+        fallback_text=fallback,
+    )
+    return ExplainTaskResponse(
+        task_id=request.task_id,
+        team_member_id=request.team_member_id,
+        explanation=explanation,
     )

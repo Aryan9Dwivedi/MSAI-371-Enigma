@@ -80,6 +80,11 @@ class Assignment(BaseModel):
     )
 
 
+class UnassignedTask(BaseModel):
+    task_id: int
+    task_name: str
+
+
 class AllocateResponse(BaseModel):
     """Result of the allocation reasoning run."""
 
@@ -94,3 +99,42 @@ class AllocateResponse(BaseModel):
     summary: str = Field(
         description="Brief summary of the allocation run.",
     )
+    overall_explanation: str | None = Field(
+        default=None,
+        description="Holistic natural-language explanation for the whole allocation run.",
+    )
+    unassigned_tasks: list[UnassignedTask] = Field(
+        default_factory=list,
+        description="Task IDs and names that could not be assigned.",
+    )
+
+
+class ExplainTaskRequest(BaseModel):
+    task_id: int
+    task_name: str
+    team_member_id: int
+    team_member_name: str
+    constraints_satisfied: list[str] = Field(default_factory=list)
+    chosen_score: float | None = None
+    chosen_reasons: list[str] = Field(
+        default_factory=list,
+        description="Evidence lines for the chosen candidate (e.g., predicted time and factor contributions).",
+    )
+    best_alternative: dict[str, str] | None = Field(
+        default=None,
+        description="Best alternative candidate (member_name, score).",
+    )
+    best_alternative_gap: float | None = Field(
+        default=None,
+        description="chosen_score - best_alternative.score (positive means the chosen candidate is higher).",
+    )
+    best_alternative_reasons: list[str] = Field(default_factory=list)
+    scoring_factors: list[str] = Field(default_factory=list)
+    hard_rules: list[str] = Field(default_factory=list)
+    top_rejection_reasons: list[str] = Field(default_factory=list)
+
+
+class ExplainTaskResponse(BaseModel):
+    task_id: int
+    team_member_id: int
+    explanation: str
