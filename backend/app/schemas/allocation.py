@@ -1,4 +1,15 @@
+from enum import Enum
+
 from pydantic import BaseModel, Field
+
+
+class AllocationStrategy(str, Enum):
+    """Allocation strategy: how to select among eligible members."""
+
+    AUTOMATIC = "automatic"
+    FAST = "fast"
+    BALANCED = "balanced"
+    CONSTRAINT_FOCUSED = "constraint_focused"
 
 
 class AllocateRequest(BaseModel):
@@ -15,6 +26,10 @@ class AllocateRequest(BaseModel):
     apply: bool = Field(
         default=False,
         description="If True, persist assignments to the database.",
+    )
+    strategy: AllocationStrategy = Field(
+        default=AllocationStrategy.AUTOMATIC,
+        description="Allocation strategy: automatic (balanced), fast, balanced (workload), or constraint_focused.",
     )
 
 
