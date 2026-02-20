@@ -75,6 +75,7 @@ export default function Allocation() {
   const [tasks, setTasks] = useState([]);
   const [agents, setAgents] = useState([]);
   const [allocations, setAllocations] = useState([]);
+  const [preStats, setPreStats] = useState(null);
 
   useEffect(() => {
     localStorage.setItem('kraft_role', role);
@@ -82,6 +83,7 @@ export default function Allocation() {
 
   useEffect(() => {
     loadData();
+    loadPreAllocationStats();
   }, []);
 
   const loadData = () => {
@@ -89,6 +91,16 @@ export default function Allocation() {
     setAgents(mockData.getAll('agents'));
     // Don't load mock allocations — we use backend only; avoids mixing mock + backend
     setAllocations([]);
+  };
+
+  const loadPreAllocationStats = async () => {
+    try {
+      const stats = await kraftApi.preAllocationStats();
+      setPreStats(stats);
+    } catch {
+      // Keep UI usable even if stats endpoint is temporarily unavailable.
+      setPreStats(null);
+    }
   };
 
   const unassignedTasks = tasks.filter(t => t.status === 'unassigned');
@@ -120,6 +132,7 @@ export default function Allocation() {
       } else {
         toast.info(res.summary || 'No assignments. The database may have no unassigned tasks. Run `python seed.py` in the backend to add sample data.');
       }
+      await loadPreAllocationStats();
     } catch (err) {
       const msg =
         err.name === 'AbortError'
@@ -200,10 +213,13 @@ export default function Allocation() {
                 <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
                   <div>
                     <p className="font-medium text-slate-800">
-                      {unassignedTasks.length} unassigned task{unassignedTasks.length !== 1 ? 's' : ''} ready for allocation
+                      {(preStats?.unassigned_tasks ?? unassignedTasks.length)} unassigned task{(preStats?.unassigned_tasks ?? unassignedTasks.length) !== 1 ? 's' : ''} ready for allocation
                     </p>
                     <p className="text-sm text-slate-500">
-                      {agents.filter(a => a.status === 'available').length} agents available
+                      {(preStats?.available_members ?? agents.filter(a => a.status === 'available').length)} agents available
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Total: {preStats?.total_members ?? agents.length} members, {preStats?.total_tasks ?? tasks.length} tasks
                     </p>
                   </div>
                   <Button 
