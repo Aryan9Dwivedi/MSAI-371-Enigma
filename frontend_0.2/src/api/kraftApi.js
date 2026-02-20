@@ -29,4 +29,13 @@ export const kraftApi = {
     const res = await fetch(`${BASE}/health`);
     return res.json();
   },
+
+  async preAllocationStats() {
+    const res = await fetch(`${BASE}/stats/pre_allocation`);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `Stats fetch failed: ${res.status}`);
+    }
+    return res.json();
+  },
 };

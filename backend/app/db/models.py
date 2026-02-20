@@ -17,6 +17,7 @@ task_required_skills = Table(
     Column("skill_id", ForeignKey("skills.id"), primary_key=True),
 )
 
+
 class TeamMember(Base):
     __tablename__ = "team_members"
 
@@ -25,6 +26,8 @@ class TeamMember(Base):
 
     work_style_preference = Column(String, nullable=True)
     calendar_availability = Column(String, nullable=True)  # can store JSON later
+    years_of_experience = Column(Integer, nullable=True)
+    resume_path = Column(String, nullable=True)  # path to uploaded resume file (Zeli)
 
     skills = relationship("Skill", secondary=team_member_skills, back_populates="team_members")
     assigned_tasks = relationship("Task", back_populates="assignee", foreign_keys="Task.assignee_id")

@@ -164,53 +164,26 @@ The backend is organized to separate concerns cleanly:
 
 
 
-The database stores the structured knowledge required for reasoning.
-
-
+The database stores the structured knowledge required for reasoning. **See `docs/DB_SCHEMA.md` for the full schema.**
 
 \### Core Entities
 
-\- \*\*TeamMember\*\*
-
-&nbsp; - name
-
-&nbsp; - work\_style\_preference
-
-&nbsp; - calendar\_availability
-
-&nbsp; - linked skills
-
-
-
-\- \*\*Skill\*\*
-
-&nbsp; - skill\_name
-
-&nbsp; - skill\_type (hard/soft)
-
-&nbsp; - proficiency\_level
-
-
-
-\- \*\*Task\*\*
-
-&nbsp; - task\_name
-
-&nbsp; - deadline
-
-&nbsp; - estimated\_time
-
-&nbsp; - priority\_order
-
-&nbsp; - required skills
-
-
+\- **Role** — admin, manager, employee (permission levels)
+\- **TeamMember** — name, email, role, work\_style\_preference, workload\_limit\_hours
+\- **TimeSlot** — start\_at, end\_at, recurrence; when each member is available (structured availability)
+\- **Skill** — skill\_name, skill\_type (hard/soft), description (proficiency is on member-skill link)
+\- **Task** — task\_name, description, deadline, estimated\_time, priority\_order, status
+\- **TaskDependency** — task depends on prerequisite (B cannot be assigned until A is done)
+\- **AllocationRun** + **Allocation** — assignment history with explanations
 
 \### Relationships
 
-\- TeamMember ⟷ Skill (many-to-many)
-
-\- Task ⟷ Skill (many-to-many)
+\- Role → TeamMember (1-to-many)
+\- TeamMember → TimeSlot (1-to-many); structured availability for reasoning
+\- TeamMember ⟷ Skill (many-to-many via team\_member\_skills, with proficiency\_level per member)
+\- Task ⟷ Skill (many-to-many via task\_required\_skills, with proficiency\_minimum)
+\- Task → Task (via task\_dependencies; B depends on A)
+\- AllocationRun → Allocation; Allocation links TeamMember + Task
 
 
 
@@ -223,6 +196,8 @@ This supports reasoning such as:
 ✅ “Who is available / not overloaded?”  
 
 ✅ “Which task should be prioritized first?”
+
+✅ “Are prerequisite tasks done before assigning?”
 
 
 

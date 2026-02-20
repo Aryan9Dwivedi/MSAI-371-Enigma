@@ -37,7 +37,7 @@ from app.services.logic_engine import (
 
 RULE_CAN_PERFORM = "can_perform(M,T) ← ∀S: requires_skill(T,S) ⇒ has_skill(M,S)"
 RULE_ELIGIBLE = "eligible(M,T) ← member(M) ∧ can_perform(M,T) ∧ available(M) ∧ ¬overloaded(M)"
-RULE_PREFERRED = "preferred(M,T,S) ← eligible(M,T) ∧ S = workload_score(M)"
+RULE_PREFERRED = "preferred(M,T,S) ← eligible(M,T) ∧ S = multi_factor_score(M,T)"
 RULE_BEST = "best_candidate(M,T) ← preferred(M,T,S) ∧ ∀M′: S ≥ S′"
 
 
@@ -142,6 +142,142 @@ def workload_score(member_id: int, kb: KnowledgeBase, max_workload: int) -> floa
     return 1.0 - (w / (max_workload + 1))
 
 
+def years_experience_score(member: "TeamMember", max_years_experience: int) -> float:
+    """Higher score = more years of experience."""
+    years = member.years_of_experience or 0
+    if max_years_experience <= 0:
+        return 0.5
+    return min(1.0, years / max_years_experience)
+
+
+def availability_score(member: "TeamMember") -> float:
+    """Estimate availability richness from calendar slots string."""
+    availability = (member.calendar_availability or "").strip()
+    if not availability:
+        return 0.0
+    slots = [slot.strip() for slot in availability.split(",") if slot.strip()]
+    # 6+ slots is considered "high availability" for normalization.
+    return min(1.0, len(slots) / 6.0)
+
+
+def skill_breadth_score(member: "TeamMember", max_skill_count: int) -> float:
+    """Higher score = broader skill profile."""
+    count = len(member.skills) if hasattr(member, "skills") and member.skills else 0
+    if max_skill_count <= 0:
+        return 0.5
+    return min(1.0, count / max_skill_count)
+
+
+def predicted_completion_hours(
+    member: "TeamMember",
+    task: "Task",
+    kb: KnowledgeBase,
+    max_workload: int,
+    max_years_experience: int,
+    max_skill_count: int,
+) -> float:
+    """
+    Person-specific duration estimate for the same task.
+    This addresses the real-world case where different people need different time.
+    """
+    base_hours = task.estimated_time if (task.estimated_time and task.estimated_time > 0) else 4.0
+    exp_s = years_experience_score(member, max_years_experience)
+    breadth_s = skill_breadth_score(member, max_skill_count)
+    avail_s = availability_score(member)
+    workload_s = workload_score(member.id, kb, max_workload)
+
+    # Multipliers >1 means slower; <1 means faster.
+    experience_multiplier = 1.45 - (0.65 * exp_s)   # [~0.80, 1.45]
+    skill_multiplier = 1.30 - (0.40 * breadth_s)    # [~0.90, 1.30]
+    availability_multiplier = 1.25 - (0.35 * avail_s)  # [~0.90, 1.25]
+    workload_multiplier = 1.40 - (0.50 * workload_s)   # [~0.90, 1.40]
+
+    predicted = base_hours * experience_multiplier * skill_multiplier * availability_multiplier * workload_multiplier
+    return max(0.25, predicted)
+
+
+def delivery_speed_score(member_id: int, predicted_hours_map: dict[int, float]) -> float:
+    """Normalize predicted completion time to [0,1], where higher means faster."""
+    if member_id not in predicted_hours_map:
+        return 0.0
+    values = list(predicted_hours_map.values())
+    if not values:
+        return 0.0
+    min_h = min(values)
+    max_h = max(values)
+    if max_h - min_h < 1e-9:
+        return 1.0
+    h = predicted_hours_map[member_id]
+    return 1.0 - ((h - min_h) / (max_h - min_h))
+
+
+def dynamic_factor_weights(task: "Task") -> dict[str, float]:
+    """
+    Dynamic weights (context-aware):
+    - Higher priority/complexity tasks emphasize experience and delivery speed.
+    - Base profile still values fairness and availability.
+    """
+    weights = {
+        "workload": 0.35,
+        "experience": 0.25,
+        "availability": 0.20,
+        "skill_breadth": 0.10,
+        "delivery_speed": 0.10,
+    }
+
+    priority = task.priority_order if task.priority_order is not None else 999
+    if priority <= 1:
+        weights["experience"] += 0.08
+        weights["delivery_speed"] += 0.07
+        weights["availability"] += 0.03
+        weights["skill_breadth"] -= 0.05
+        weights["workload"] -= 0.03
+
+    estimated_time = task.estimated_time or 0.0
+    if estimated_time >= 6.0:
+        weights["delivery_speed"] += 0.10
+        weights["experience"] += 0.05
+        weights["workload"] += 0.02
+        weights["availability"] -= 0.04
+        weights["skill_breadth"] -= 0.03
+
+    # Keep strictly positive, then normalize.
+    for k in list(weights.keys()):
+        weights[k] = max(0.02, weights[k])
+    total = sum(weights.values())
+    return {k: v / total for k, v in weights.items()}
+
+
+def mcdm_score(
+    member: "TeamMember",
+    task: "Task",
+    kb: KnowledgeBase,
+    max_workload: int,
+    max_years_experience: int,
+    max_skill_count: int,
+    delivery_speed: float,
+) -> tuple[float, dict[str, float], dict[str, float], dict[str, float]]:
+    """
+    Multi-criteria score with interpretable factor breakdown.
+    Returns:
+      - final_score
+      - raw_factor_scores
+      - weighted_contributions
+      - factor_weights
+    """
+    factor_scores = {
+        "workload": workload_score(member.id, kb, max_workload),
+        "experience": years_experience_score(member, max_years_experience),
+        "availability": availability_score(member),
+        "skill_breadth": skill_breadth_score(member, max_skill_count),
+        "delivery_speed": delivery_speed,
+    }
+    weights = dynamic_factor_weights(task)
+    weighted = {k: factor_scores[k] * weights[k] for k in factor_scores}
+    final_score = sum(weighted.values())
+    return final_score, factor_scores, weighted, weights
+
+
 # ---------------------------------------------------------------------------
 # Inference trace
 # ---------------------------------------------------------------------------
@@ -243,6 +379,8 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     kb = build_knowledge_base(members, tasks)
     workload_map = {m.id: kb.workload.get(m.id, 0) for m in members}
     max_workload = max(workload_map.values(), default=0)
+    max_years_experience = max(((m.years_of_experience or 0) for m in members), default=0)
+    max_skill_count = max((len(m.skills) if hasattr(m, "skills") and m.skills else 0 for m in members), default=0)
 
     assignments: list[Assignment] = []
     unassigned: list[int] = []
@@ -274,11 +412,43 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
                 return ["Overloaded (workload exceeds threshold)"]
             return ["Not available (no calendar)"]
 
-        candidates = []
+        predicted_hours_map: dict[int, float] = {}
         for m in members:
             if m.id in eligible_ids:
-                score = workload_score(m.id, kb, max_workload)
-                reasons = [f"Workload: {workload_map[m.id]} tasks" if max_workload > 0 else "Available"]
+                predicted_hours_map[m.id] = predicted_completion_hours(
+                    member=m,
+                    task=task,
+                    kb=kb,
+                    max_workload=max_workload,
+                    max_years_experience=max_years_experience,
+                    max_skill_count=max_skill_count,
+                )
+
+        candidates = []
+        score_cache: dict[int, tuple[float, dict[str, float], dict[str, float], dict[str, float]]] = {}
+        for m in members:
+            if m.id in eligible_ids:
+                pred_h = predicted_hours_map[m.id]
+                speed_s = delivery_speed_score(m.id, predicted_hours_map)
+                score, factors, weighted, weights = mcdm_score(
+                    member=m,
+                    task=task,
+                    kb=kb,
+                    max_workload=max_workload,
+                    max_years_experience=max_years_experience,
+                    max_skill_count=max_skill_count,
+                    delivery_speed=speed_s,
+                )
+                score_cache[m.id] = (score, factors, weighted, weights)
+                reasons = [
+                    f"MCDM score: {score:.3f}",
+                    f"Predicted completion time: {pred_h:.2f}h",
+                    f"Workload fairness {factors['workload']:.2f} × w{weights['workload']:.2f} = {weighted['workload']:.2f}",
+                    f"Experience {factors['experience']:.2f} × w{weights['experience']:.2f} = {weighted['experience']:.2f}",
+                    f"Availability {factors['availability']:.2f} × w{weights['availability']:.2f} = {weighted['availability']:.2f}",
+                    f"Skill breadth {factors['skill_breadth']:.2f} × w{weights['skill_breadth']:.2f} = {weighted['skill_breadth']:.2f}",
+                    f"Delivery speed {factors['delivery_speed']:.2f} × w{weights['delivery_speed']:.2f} = {weighted['delivery_speed']:.2f}",
+                ]
                 candidates.append(_CandidateResult(m.id, m.name, True, score, reasons, None))
             else:
                 candidates.append(_CandidateResult(m.id, m.name, False, 0.0, [], get_rejection(m.id)))
@@ -287,9 +457,9 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             unassigned.append(task.id)
             continue
 
-        # best_candidate: max preferred score among eligible
-        chosen_id = max(eligible_ids, key=lambda mid: workload_score(mid, kb, max_workload))
-        chosen_score = workload_score(chosen_id, kb, max_workload)
+        # best_candidate: max multi-factor score among eligible
+        chosen_id = max(eligible_ids, key=lambda mid: score_cache[mid][0])
+        chosen_score, chosen_factors, chosen_weighted, chosen_weights = score_cache[chosen_id]
         chosen_member = next(m for m in members if m.id == chosen_id)
 
         required_skills = [
@@ -301,10 +471,18 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
         if chosen_member.calendar_availability:
             constraints_satisfied.append(f"Has availability: {chosen_member.calendar_availability}")
 
+        chosen_pred_h = predicted_hours_map.get(chosen_id, task.estimated_time or 0.0)
+        top_factors = sorted(chosen_weighted.items(), key=lambda x: x[1], reverse=True)[:2]
+        top_factor_text = ", ".join(
+            f"{name}({chosen_factors[name]:.2f}×w{chosen_weights[name]:.2f})"
+            for name, _ in top_factors
+        )
         explanation = (
             f"{chosen_member.name} assigned to {task.task_name} by logical inference: "
-            f"eligible(M,T) proved (can_perform, available, ¬overloaded), "
-            f"preferred by workload score {chosen_score:.2f}."
+            f"eligible(M,T) proved (can_perform, available, ¬overloaded). "
+            f"Then selected by multi-factor scoring (MCDM) with final score {chosen_score:.2f}. "
+            f"Predicted completion time for this member: {chosen_pred_h:.2f}h. "
+            f"Top contributors: {top_factor_text}."
         )
 
         inference_trace = build_chosen_trace(chosen_id, task.id, kb, engine, chosen_score)
