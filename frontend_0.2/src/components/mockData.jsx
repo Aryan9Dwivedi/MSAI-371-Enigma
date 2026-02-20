@@ -1,6 +1,8 @@
 // Mock data service for standalone app
 
 const STORAGE_KEY = 'kraft_app_data';
+const STORAGE_VERSION_KEY = 'kraft_app_data_version';
+const DATA_VERSION = '2026-02-course-company-pro-v1';
 
 // Initialize default mock data (Scenario B: Course Product Company)
 const defaultData = {
@@ -537,7 +539,10 @@ const defaultData = {
 // Load data from localStorage or use defaults
 export const loadData = () => {
   const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored) {
+  const storedVersion = localStorage.getItem(STORAGE_VERSION_KEY);
+
+  // Auto-migrate/reset local mock data when scenario version changes.
+  if (stored && storedVersion === DATA_VERSION) {
     try {
       return JSON.parse(stored);
     } catch (e) {
@@ -551,6 +556,7 @@ export const loadData = () => {
 // Save data to localStorage
 export const saveData = (data) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  localStorage.setItem(STORAGE_VERSION_KEY, DATA_VERSION);
 };
 
 // Get all entities of a type

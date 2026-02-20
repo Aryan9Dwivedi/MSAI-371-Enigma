@@ -1,213 +1,133 @@
-# KRAFT Database Schema
+# KRAFT Database Schema (Current)
 
-Schema lives in `backend/app/db/models.py`. SQLite, file at `backend/kraft.db`.
+Source of truth: `backend/app/db/models.py`  
+Database engine: SQLite (`backend/kraft.db`)
 
 ---
 
 ## Overview
 
-We store people, their skills and availability, tasks and what they need, and who got assigned what (plus the reason). The allocator reads this, runs its rules, and writes new assignments.
+The current schema is intentionally lightweight and supports:
 
-Flow: people have skills + time slots → tasks need skills + may depend on other tasks → allocator matches and assigns → we log each run and each assignment.
+1. Team members and their profile metadata
+2. Skills catalog
+3. Tasks to allocate
+4. Many-to-many links:
+   - member ↔ skills
+   - task ↔ required skills
+5. Assignment persistence via `tasks.assignee_id`
 
----
-
-## Diagram
-
-Table relationships (connected via foreign keys):
-
-```
-Role
-    ↓ one role → many members
-TeamMember
-    ├── time_slots (member's available time slots)
-    ├── team_member_skills ──→ Skill (which skills each member has)
-    └── allocations (which tasks each member has been assigned)
-
-Skill
-    └── task_required_skills ──→ Task (which skills each task needs)
-
-Task
-    ├── task_dependencies (B depends on A)
-    └── allocations (which tasks have been assigned to whom)
-
-AllocationRun (one allocation run)
-    └── allocations (all assignments from this run)
-
-Allocation
-    ├── → TeamMember
-    └── → Task
-```
+The allocation engine (`backend/app/services/reasoning.py`) reads from these tables, runs FOPC + MCDM scoring, and optionally writes assignments back to `tasks.assignee_id`.
 
 ---
 
-## Reasoning Engine Constraints
+## ER-style Relationship Summary
 
-**Hard constraints** (filter out invalid candidates):
+```
+team_members
+  ├─< team_member_skills >─┐
+  │                        │
+  └─────────────────────── skills
 
-| Check | Tables | Logic |
-|-------|--------|-------|
-| Has required skills | team_member_skills, task_required_skills | person's proficiency_level ≥ task's proficiency_minimum for each required skill |
-| Enough time before deadline | time_slots, tasks | sum of slot hours before deadline ≥ estimated_time |
-| Not overloaded | allocations, workload_limit_hours | current active task hours + new task ≤ workload_limit_hours |
-| Prereqs done | task_dependencies, task status | all depends_on_task_id rows have status = done |
-
-**Soft** (prefer but not required): higher proficiency, more years of experience, more even workload, match work_style_preference, team/department alignment.
-
-**Output:** allocation_runs (one per run) + allocations (person, task, explanation).
-
-**Proficiency order:** beginner < intermediate < advanced.
+tasks
+  ├─< task_required_skills >─ skills
+  └─ assignee_id ────────────> team_members.id
+```
 
 ---
 
 ## Tables
 
-### roles
+### 1) `team_members`
 
-Admin, manager, employee. Controls who can run the allocator.
+Stores candidate assignees.
 
-| Field | Type |
-|-------|------|
-| id | Integer |
-| name | String (admin/manager/employee) |
-| description | String |
-
----
-
-### team_members
-
-People on the team.
-
-| Field | Type |
-|-------|------|
-| id | Integer |
-| name | String |
-| email | String |
-| role_id | FK → roles |
-| team | String (e.g., "Engineering", "Marketing", "Product") |
-| department | String (e.g., "Software Development", "Data Science") |
-| work_style_preference | String |
-| calendar_availability | String (legacy, use time_slots instead) |
-| workload_limit_hours | Float |
-| resume_text | Text (extracted/parsed resume content) |
-| resume_file_path | String (path to uploaded resume file) |
-| created_at, updated_at | DateTime |
+| Field | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | Primary key |
+| `name` | String | Unique, required |
+| `work_style_preference` | String | Optional |
+| `calendar_availability` | String | Optional (currently string-based availability) |
+| `years_of_experience` | Integer | Optional |
+| `resume_path` | String | Optional (path/reference for resume source) |
 
 ---
 
-### time_slots
+### 2) `skills`
 
-When each person is available. One row per slot (start_at, end_at).
+Skill catalog shared across members and tasks.
 
-| Field | Type |
-|-------|------|
-| id | Integer |
-| team_member_id | FK → team_members |
-| start_at | DateTime |
-| end_at | DateTime |
-| recurrence | String (weekly/daily/null) |
-
----
-
-### skills
-
-Skill catalog (Python, Writing, etc). Proficiency lives on the member–skill link, not here.
-
-| Field | Type |
-|-------|------|
-| id | Integer |
-| skill_name | String |
-| skill_type | String (hard/soft) |
-| description | String |
+| Field | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | Primary key |
+| `skill_name` | String | Required |
+| `skill_type` | String | Required (`hard`/`soft`) |
+| `proficiency_level` | String | Optional metadata |
 
 ---
 
-### team_member_skills
+### 3) `tasks`
 
-Who has what skill and at what level. Same skill, different people = different levels.
+Units of work that can be allocated.
 
-| Field | Type |
-|-------|------|
-| team_member_id | FK |
-| skill_id | FK |
-| proficiency_level | String (beginner/intermediate/advanced) |
-| years_of_experience | Float (years of experience with this specific skill) |
-
----
-
-### tasks
-
-Work to be done.
-
-| Field | Type |
-|-------|------|
-| id | Integer |
-| task_name | String |
-| description | Text |
-| deadline | String |
-| estimated_time | Float |
-| priority_order | Integer |
-| status | String (todo/in_progress/done/cancelled) |
-| created_at, updated_at | DateTime |
+| Field | Type | Notes |
+|---|---|---|
+| `id` | Integer (PK) | Primary key |
+| `task_name` | String | Unique, required |
+| `deadline` | String | Optional |
+| `estimated_time` | Float | Optional (hours) |
+| `priority_order` | Integer | Optional (lower = higher priority) |
+| `assignee_id` | Integer (FK → `team_members.id`) | Nullable; null means unassigned |
 
 ---
 
-### task_required_skills
+### 4) `team_member_skills` (association table)
 
-Which skill a task needs and the minimum level. e.g. Literature Review needs Writing at least intermediate.
+Many-to-many link between members and skills.
 
-| Field | Type |
-|-------|------|
-| task_id | FK |
-| skill_id | FK |
-| proficiency_minimum | String |
+| Field | Type | Notes |
+|---|---|---|
+| `team_member_id` | Integer (FK) | PK part 1 |
+| `skill_id` | Integer (FK) | PK part 2 |
 
----
-
-### task_dependencies
-
-B can't be assigned until A is done. task_id = B, depends_on_task_id = A.
-
-| Field | Type |
-|-------|------|
-| task_id | FK |
-| depends_on_task_id | FK |
+Composite primary key: (`team_member_id`, `skill_id`)
 
 ---
 
-### allocation_runs
+### 5) `task_required_skills` (association table)
 
-One row per allocator run.
+Many-to-many link between tasks and required skills.
 
-| Field | Type |
-|-------|------|
-| id | Integer |
-| run_at | DateTime |
-| notes | String |
+| Field | Type | Notes |
+|---|---|---|
+| `task_id` | Integer (FK) | PK part 1 |
+| `skill_id` | Integer (FK) | PK part 2 |
 
----
-
-### allocations
-
-One row per assignment. Who got which task, and why.
-
-| Field | Type |
-|-------|------|
-| id | Integer |
-| run_id | FK → allocation_runs |
-| team_member_id | FK → team_members |
-| task_id | FK → tasks |
-| explanation | Text |
-| status | String (pending/completed/cancelled) |
+Composite primary key: (`task_id`, `skill_id`)
 
 ---
 
-## Relationships
+## What Is Not In the Current Schema
 
-- Role → TeamMember (1-to-many)
-- TeamMember → TimeSlot (1-to-many)
-- TeamMember ↔ Skill via team_member_skills
-- Task ↔ Skill via task_required_skills
-- Task → Task via task_dependencies
-- AllocationRun → Allocation (1-to-many)
-- Allocation → TeamMember, Task
+The following entities are **not** present in the current code/database:
+
+- `roles`
+- `time_slots`
+- `task_dependencies`
+- `allocation_runs`
+- `allocations`
+
+If these are needed later, they should be introduced via migration and model updates.
+
+---
+
+## Allocation Read/Write Behavior (Current)
+
+- Read:
+  - Unassigned tasks: `tasks.assignee_id IS NULL`
+  - Candidate members: `team_members`
+  - Skill edges from link tables
+- Write (when `apply=true`):
+  - Update `tasks.assignee_id = chosen_member_id`
+
+No separate allocation history table exists yet in this schema.
