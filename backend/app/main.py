@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.health import router as health_router
 from app.api.routes.db_ping import router as db_router
+from app.api.routes.allocate import router as allocate_router
 
 from app.db.session import engine
 from app.db.base import Base
@@ -23,3 +24,4 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(db_router)
+app.include_router(allocate_router)
