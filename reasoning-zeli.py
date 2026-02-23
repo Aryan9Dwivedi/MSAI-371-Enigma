@@ -3,9 +3,6 @@ KRAFT Reasoning Engine — explainable task allocation.
 
 Uses a logical inference engine (backward chaining over FOPC-style rules).
 Rules are declarative; the engine performs unification and resolution.
-
-Merged from reasoning-mia.py (multi-strategy scoring) and reasoning-zeli.py
-(LLM explanation hooks, rejection tracking, unassigned task tracking, explain_task).
 """
 
 from __future__ import annotations
@@ -21,12 +18,11 @@ if TYPE_CHECKING:
 from app.schemas.allocation import (
     AllocateRequest,
     AllocateResponse,
-    AllocationStrategy,
     Assignment,
     AssignmentExplanation,
+    InferenceStep,
     ExplainTaskRequest,
     ExplainTaskResponse,
-    InferenceStep,
     UnassignedTask,
 )
 from app.services.logic_engine import (
@@ -361,9 +357,8 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     """
     Run allocation using logical inference.
 
-    The engine proves eligible(M, T) for each task T; we rank by the
-    strategy-specific score and select best_candidate. Rules are
-    interpreted by the logic engine.
+    The engine proves eligible(M, T) for each task T; we rank by workload
+    and select best_candidate. Rules are interpreted by the logic engine.
     """
     from app.db.models import Task, TeamMember
 
@@ -425,11 +420,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
                 return ["Overloaded (workload exceeds threshold)"]
             return ["Not available (no calendar)"]
 
-        # Strategy-specific: compute scores and select candidate
-        strategy = request.strategy
         predicted_hours_map: dict[int, float] = {}
-
-        # Always compute predicted hours for eligible members (used in overall explanation)
         for m in members:
             if m.id in eligible_ids:
                 predicted_hours_map[m.id] = predicted_completion_hours(
@@ -441,77 +432,41 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
                     max_skill_count=max_skill_count,
                 )
 
-        score_cache: dict[int, tuple[float, dict[str, float], dict[str, float], dict[str, float]]] = {}
         candidates = []
-
+        score_cache: dict[int, tuple[float, dict[str, float], dict[str, float], dict[str, float]]] = {}
         for m in members:
             if m.id in eligible_ids:
-                if strategy == AllocationStrategy.AUTOMATIC:
-                    pred_h = predicted_hours_map[m.id]
-                    speed_s = delivery_speed_score(m.id, predicted_hours_map)
-                    score, factors, weighted, weights = mcdm_score(
-                        member=m,
-                        task=task,
-                        kb=kb,
-                        max_workload=max_workload,
-                        max_years_experience=max_years_experience,
-                        max_skill_count=max_skill_count,
-                        delivery_speed=speed_s,
-                    )
-                    reasons = [
-                        f"MCDM score: {score:.3f}",
-                        f"Predicted completion time: {pred_h:.2f}h",
-                        f"Workload fairness {factors['workload']:.2f} × w{weights['workload']:.2f} = {weighted['workload']:.2f}",
-                        f"Experience {factors['experience']:.2f} × w{weights['experience']:.2f} = {weighted['experience']:.2f}",
-                        f"Availability {factors['availability']:.2f} × w{weights['availability']:.2f} = {weighted['availability']:.2f}",
-                        f"Skill breadth {factors['skill_breadth']:.2f} × w{weights['skill_breadth']:.2f} = {weighted['skill_breadth']:.2f}",
-                        f"Delivery speed {factors['delivery_speed']:.2f} × w{weights['delivery_speed']:.2f} = {weighted['delivery_speed']:.2f}",
-                    ]
-                    score_cache[m.id] = (score, factors, weighted, weights)
-                elif strategy == AllocationStrategy.FAST:
-                    w_s = workload_score(m.id, kb, max_workload)
-                    a_s = availability_score(m)
-                    score = 0.7 * w_s + 0.3 * a_s
-                    factors = {"workload": w_s, "availability": a_s}
-                    weighted = {"workload": 0.7 * w_s, "availability": 0.3 * a_s}
-                    weights = {"workload": 0.7, "availability": 0.3}
-                    reasons = [
-                        f"Fast score: {score:.3f} (workload {w_s:.2f}, availability {a_s:.2f})",
-                    ]
-                    score_cache[m.id] = (score, factors, weighted, weights)
-                elif strategy in (AllocationStrategy.BALANCED, AllocationStrategy.CONSTRAINT_FOCUSED):
-                    w_s = workload_score(m.id, kb, max_workload)
-                    score = w_s
-                    factors = {"workload": w_s}
-                    weighted = {"workload": w_s}
-                    weights = {"workload": 1.0}
-                    reasons = [
-                        f"Workload score: {w_s:.3f} (lower workload = higher score)",
-                    ] if strategy == AllocationStrategy.BALANCED else [
-                        f"Constraint-satisfying, workload tiebreaker: {w_s:.3f}",
-                    ]
-                    score_cache[m.id] = (score, factors, weighted, weights)
-                else:
-                    w_s = workload_score(m.id, kb, max_workload)
-                    score, factors, weighted, weights = w_s, {"workload": w_s}, {"workload": w_s}, {"workload": 1.0}
-                    reasons = [f"Score: {score:.3f}"]
-                    score_cache[m.id] = (score, factors, weighted, weights)
-
+                pred_h = predicted_hours_map[m.id]
+                speed_s = delivery_speed_score(m.id, predicted_hours_map)
+                score, factors, weighted, weights = mcdm_score(
+                    member=m,
+                    task=task,
+                    kb=kb,
+                    max_workload=max_workload,
+                    max_years_experience=max_years_experience,
+                    max_skill_count=max_skill_count,
+                    delivery_speed=speed_s,
+                )
+                score_cache[m.id] = (score, factors, weighted, weights)
+                reasons = [
+                    f"MCDM score: {score:.3f}",
+                    f"Predicted completion time: {pred_h:.2f}h",
+                    f"Workload fairness {factors['workload']:.2f} × w{weights['workload']:.2f} = {weighted['workload']:.2f}",
+                    f"Experience {factors['experience']:.2f} × w{weights['experience']:.2f} = {weighted['experience']:.2f}",
+                    f"Availability {factors['availability']:.2f} × w{weights['availability']:.2f} = {weighted['availability']:.2f}",
+                    f"Skill breadth {factors['skill_breadth']:.2f} × w{weights['skill_breadth']:.2f} = {weighted['skill_breadth']:.2f}",
+                    f"Delivery speed {factors['delivery_speed']:.2f} × w{weights['delivery_speed']:.2f} = {weighted['delivery_speed']:.2f}",
+                ]
                 candidates.append(_CandidateResult(m.id, m.name, True, score, reasons, None))
             else:
                 candidates.append(_CandidateResult(m.id, m.name, False, 0.0, [], get_rejection(m.id)))
-
-        # Collect rejection reasons for overall explanation
-        for c in candidates:
-            if c.rejection_reasons:
-                run_rejection_reasons.extend(c.rejection_reasons)
 
         if not eligible_ids:
             unassigned.append(task.id)
             unassigned_tasks.append(UnassignedTask(task_id=task.id, task_name=task.task_name))
             continue
 
-        # best_candidate: max score among eligible (strategy-specific)
+        # best_candidate: max multi-factor score among eligible
         chosen_id = max(eligible_ids, key=lambda mid: score_cache[mid][0])
         chosen_score, chosen_factors, chosen_weighted, chosen_weights = score_cache[chosen_id]
         chosen_member = next(m for m in members if m.id == chosen_id)
@@ -531,30 +486,14 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             f"{name}({chosen_factors[name]:.2f}×w{chosen_weights[name]:.2f})"
             for name, _ in top_factors
         )
-        if strategy == AllocationStrategy.AUTOMATIC:
-            explanation = (
-                f"{chosen_member.name} assigned to {task.task_name} by logical inference: "
-                f"eligible(M,T) proved (can_perform, available, ¬overloaded). "
-                f"Then selected by multi-factor scoring (MCDM) with final score {chosen_score:.2f}. "
-                f"Predicted completion time for this member: {chosen_pred_h:.2f}h. "
-                f"Top contributors: {top_factor_text}."
-            )
-        elif strategy == AllocationStrategy.FAST:
-            explanation = (
-                f"{chosen_member.name} assigned to {task.task_name} (fast strategy): "
-                f"eligible(M,T) proved. Selected by workload + availability score {chosen_score:.2f}."
-            )
-        elif strategy == AllocationStrategy.BALANCED:
-            explanation = (
-                f"{chosen_member.name} assigned to {task.task_name} (balanced workload): "
-                f"eligible(M,T) proved. Selected for lowest workload (score {chosen_score:.2f}) to ensure even distribution."
-            )
-        else:  # CONSTRAINT_FOCUSED
-            explanation = (
-                f"{chosen_member.name} assigned to {task.task_name} (constraint-focused): "
-                f"Strictly satisfies all constraints (skills, availability, ¬overloaded). "
-                f"Workload tiebreaker: {chosen_score:.2f}."
-            )
+        fallback_explanation = (
+            f"{chosen_member.name} assigned to {task.task_name} by logical inference: "
+            f"eligible(M,T) proved (can_perform, available, ¬overloaded). "
+            f"Then selected by multi-factor scoring (MCDM) with final score {chosen_score:.2f}. "
+            f"Predicted completion time for this member: {chosen_pred_h:.2f}h. "
+            f"Top contributors: {top_factor_text}."
+        )
+        explanation = fallback_explanation
 
         inference_trace = build_chosen_trace(chosen_id, task.id, kb, engine, chosen_score)
 
@@ -569,6 +508,9 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             )
             for c in candidates
         ]
+        for c in candidates:
+            if c.rejection_reasons:
+                run_rejection_reasons.extend(c.rejection_reasons)
 
         assignments.append(
             Assignment(
@@ -613,15 +555,12 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     num_assigned = len(assignments)
     num_unassigned = len(unassigned)
     summary = f"Allocated {num_assigned} task(s). {num_unassigned} task(s) could not be assigned (no eligible member)."
-
-    # --- Overall explanation (Zeli enhancement) ---
     rejection_counts: dict[str, int] = {}
     for r in run_rejection_reasons:
         rejection_counts[r] = rejection_counts.get(r, 0) + 1
-
     def _short_reason(reason: str) -> str:
         if reason.startswith("Missing required skill: "):
-            return "Missing skill: " + reason[len("Missing required skill: "):]
+            return "Missing skill: " + reason[len("Missing required skill: ") :]
         if reason.startswith("Overloaded"):
             return "Overloaded"
         if reason.startswith("Not available"):
@@ -677,13 +616,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     )
 
 
-# ---------------------------------------------------------------------------
-# Per-task explanation (Zeli enhancement)
-# ---------------------------------------------------------------------------
-
-
 def explain_task(request: ExplainTaskRequest) -> ExplainTaskResponse:
-    """Generate a detailed explanation for a single task assignment."""
     hard_rules = request.hard_rules or [
         "All required skills must be present (AND match).",
         "Calendar availability must be present.",

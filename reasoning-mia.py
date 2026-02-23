@@ -3,9 +3,6 @@ KRAFT Reasoning Engine — explainable task allocation.
 
 Uses a logical inference engine (backward chaining over FOPC-style rules).
 Rules are declarative; the engine performs unification and resolution.
-
-Merged from reasoning-mia.py (multi-strategy scoring) and reasoning-zeli.py
-(LLM explanation hooks, rejection tracking, unassigned task tracking, explain_task).
 """
 
 from __future__ import annotations
@@ -24,10 +21,7 @@ from app.schemas.allocation import (
     AllocationStrategy,
     Assignment,
     AssignmentExplanation,
-    ExplainTaskRequest,
-    ExplainTaskResponse,
     InferenceStep,
-    UnassignedTask,
 )
 from app.services.logic_engine import (
     ConjGoal,
@@ -37,7 +31,6 @@ from app.services.logic_engine import (
     NegGoal,
     Var,
 )
-from app.services.explanation_llm import maybe_generate_run_explanation, maybe_generate_task_explanation
 
 # ---------------------------------------------------------------------------
 # Rule definitions (FOPC) — declarative, interpreted by the logic engine
@@ -361,9 +354,8 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     """
     Run allocation using logical inference.
 
-    The engine proves eligible(M, T) for each task T; we rank by the
-    strategy-specific score and select best_candidate. Rules are
-    interpreted by the logic engine.
+    The engine proves eligible(M, T) for each task T; we rank by workload
+    and select best_candidate. Rules are interpreted by the logic engine.
     """
     from app.db.models import Task, TeamMember
 
@@ -382,7 +374,6 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             assignments=[],
             unassigned_task_ids=[t.id for t in tasks],
             summary="No tasks to allocate or no team members available.",
-            overall_explanation="No allocation was performed because no tasks or no members were available.",
         )
 
     engine = build_engine_from_kb(members, tasks)
@@ -394,9 +385,6 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
 
     assignments: list[Assignment] = []
     unassigned: list[int] = []
-    unassigned_tasks: list[UnassignedTask] = []
-    run_top_assignments: list[dict[str, str]] = []
-    run_rejection_reasons: list[str] = []
 
     for task in tasks:
         # Logical query: find all M such that eligible(M, task.id)
@@ -429,17 +417,17 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
         strategy = request.strategy
         predicted_hours_map: dict[int, float] = {}
 
-        # Always compute predicted hours for eligible members (used in overall explanation)
-        for m in members:
-            if m.id in eligible_ids:
-                predicted_hours_map[m.id] = predicted_completion_hours(
-                    member=m,
-                    task=task,
-                    kb=kb,
-                    max_workload=max_workload,
-                    max_years_experience=max_years_experience,
-                    max_skill_count=max_skill_count,
-                )
+        if strategy == AllocationStrategy.AUTOMATIC:
+            for m in members:
+                if m.id in eligible_ids:
+                    predicted_hours_map[m.id] = predicted_completion_hours(
+                        member=m,
+                        task=task,
+                        kb=kb,
+                        max_workload=max_workload,
+                        max_years_experience=max_years_experience,
+                        max_skill_count=max_skill_count,
+                    )
 
         score_cache: dict[int, tuple[float, dict[str, float], dict[str, float], dict[str, float]]] = {}
         candidates = []
@@ -501,14 +489,8 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             else:
                 candidates.append(_CandidateResult(m.id, m.name, False, 0.0, [], get_rejection(m.id)))
 
-        # Collect rejection reasons for overall explanation
-        for c in candidates:
-            if c.rejection_reasons:
-                run_rejection_reasons.extend(c.rejection_reasons)
-
         if not eligible_ids:
             unassigned.append(task.id)
-            unassigned_tasks.append(UnassignedTask(task_id=task.id, task_name=task.task_name))
             continue
 
         # best_candidate: max score among eligible (strategy-specific)
@@ -583,14 +565,6 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
                 candidate_explanations=candidate_explanations,
             )
         )
-        run_top_assignments.append(
-            {
-                "task_name": task.task_name,
-                "member_name": chosen_member.name,
-                "score": f"{chosen_score:.3f}",
-                "top_factors": ", ".join(name for name, _ in top_factors),
-            }
-        )
 
         if request.apply:
             task.assignee_id = chosen_id
@@ -614,111 +588,8 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     num_unassigned = len(unassigned)
     summary = f"Allocated {num_assigned} task(s). {num_unassigned} task(s) could not be assigned (no eligible member)."
 
-    # --- Overall explanation (Zeli enhancement) ---
-    rejection_counts: dict[str, int] = {}
-    for r in run_rejection_reasons:
-        rejection_counts[r] = rejection_counts.get(r, 0) + 1
-
-    def _short_reason(reason: str) -> str:
-        if reason.startswith("Missing required skill: "):
-            return "Missing skill: " + reason[len("Missing required skill: "):]
-        if reason.startswith("Overloaded"):
-            return "Overloaded"
-        if reason.startswith("Not available"):
-            return "Not available"
-        return reason
-
-    unique_rejections = [
-        f"{_short_reason(k)} ({v})"
-        for k, v in sorted(rejection_counts.items(), key=lambda x: x[1], reverse=True)
-    ]
-    top_assignment_text = ", ".join(
-        f"{item['task_name']} -> {item['member_name']} ({item['score']})"
-        for item in run_top_assignments[:3]
-    ) or "No successful assignments"
-    rejection_text = "; ".join(unique_rejections[:3]) if unique_rejections else "No rejection reasons"
-    fallback_overall_explanation = "\n".join(
-        [
-            f"- Outcome: assigned {num_assigned}/{len(tasks)} tasks; unassigned {num_unassigned}.",
-            "- Hard rules: required skills + availability + not overloaded (workload <= 10).",
-            "- Scoring: MCDM (workload_fairness, experience, availability_richness, skill_breadth, delivery_speed).",
-            f"- Rejections: {rejection_text}.",
-        ]
-    )
-    hard_rules = [
-        "All required skills must be present (AND match).",
-        "Calendar availability must be present.",
-        "Not overloaded (workload <= 10).",
-    ]
-    scoring_factors = [
-        "workload_fairness",
-        "experience",
-        "availability_richness",
-        "skill_breadth",
-        "delivery_speed",
-    ]
-    overall_explanation = maybe_generate_run_explanation(
-        total_tasks_considered=len(tasks),
-        assigned_count=num_assigned,
-        unassigned_count=num_unassigned,
-        top_assignments=run_top_assignments,
-        top_rejection_reasons=unique_rejections,
-        scoring_factors=scoring_factors,
-        hard_rules=hard_rules,
-        fallback_text=fallback_overall_explanation,
-    )
-
     return AllocateResponse(
         assignments=assignments,
         unassigned_task_ids=unassigned,
         summary=summary,
-        overall_explanation=overall_explanation,
-        unassigned_tasks=unassigned_tasks,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Per-task explanation (Zeli enhancement)
-# ---------------------------------------------------------------------------
-
-
-def explain_task(request: ExplainTaskRequest) -> ExplainTaskResponse:
-    """Generate a detailed explanation for a single task assignment."""
-    hard_rules = request.hard_rules or [
-        "All required skills must be present (AND match).",
-        "Calendar availability must be present.",
-        "Not overloaded (workload <= 10).",
-    ]
-    scoring_factors = request.scoring_factors or [
-        "workload_fairness",
-        "experience",
-        "availability_richness",
-        "skill_breadth",
-        "delivery_speed",
-    ]
-    fallback = "\n".join(
-        [
-            f"- {request.team_member_name} assigned to {request.task_name}.",
-            "- Eligible via required skills + availability + not overloaded.",
-            f"- Selected by MCDM ({', '.join(scoring_factors)}).",
-        ]
-    )
-    explanation = maybe_generate_task_explanation(
-        task_name=request.task_name,
-        member_name=request.team_member_name,
-        constraints_satisfied=request.constraints_satisfied,
-        chosen_score=request.chosen_score,
-        hard_rules=hard_rules,
-        scoring_factors=scoring_factors,
-        chosen_reasons=request.chosen_reasons,
-        best_alternative=request.best_alternative,
-        best_alternative_gap=request.best_alternative_gap,
-        best_alternative_reasons=request.best_alternative_reasons,
-        top_rejection_reasons=request.top_rejection_reasons,
-        fallback_text=fallback,
-    )
-    return ExplainTaskResponse(
-        task_id=request.task_id,
-        team_member_id=request.team_member_id,
-        explanation=explanation,
     )

@@ -95,6 +95,13 @@ class Assignment(BaseModel):
     )
 
 
+class UnassignedTask(BaseModel):
+    """A task that could not be assigned to any eligible member."""
+
+    task_id: int
+    task_name: str
+
+
 class AllocateResponse(BaseModel):
     """Result of the allocation reasoning run."""
 
@@ -109,3 +116,37 @@ class AllocateResponse(BaseModel):
     summary: str = Field(
         description="Brief summary of the allocation run.",
     )
+    overall_explanation: str | None = Field(
+        default=None,
+        description="LLM-generated (or fallback) overall explanation of the allocation run.",
+    )
+    unassigned_tasks: list[UnassignedTask] = Field(
+        default_factory=list,
+        description="Details of tasks that could not be assigned.",
+    )
+
+
+class ExplainTaskRequest(BaseModel):
+    """Request to explain a single task assignment."""
+
+    task_id: int
+    team_member_id: int
+    task_name: str
+    team_member_name: str
+    constraints_satisfied: list[str] = Field(default_factory=list)
+    chosen_score: float = 0.0
+    chosen_reasons: list[str] = Field(default_factory=list)
+    best_alternative: str | None = None
+    best_alternative_gap: float | None = None
+    best_alternative_reasons: list[str] = Field(default_factory=list)
+    top_rejection_reasons: list[str] = Field(default_factory=list)
+    hard_rules: list[str] | None = None
+    scoring_factors: list[str] | None = None
+
+
+class ExplainTaskResponse(BaseModel):
+    """Response containing LLM-generated (or fallback) explanation for a single assignment."""
+
+    task_id: int
+    team_member_id: int
+    explanation: str

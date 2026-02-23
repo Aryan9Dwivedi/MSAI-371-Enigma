@@ -108,7 +108,7 @@ export default function Allocation() {
   const runAllocation = async () => {
     setIsRunning(true);
     try {
-      const res = await kraftApi.allocate({ apply: false });
+      const res = await kraftApi.allocate({ apply: false, strategy });
       const mapped = (res.assignments || []).map((a) => ({
         id: `backend-${a.task_id}`,
         task_id: a.task_id,
