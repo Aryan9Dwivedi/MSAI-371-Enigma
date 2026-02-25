@@ -1,0 +1,41 @@
+---
+description: Core project context for KRAFT - tech stack, structure, conventions
+alwaysApply: true
+---
+
+# KRAFT Project Context
+
+**KRAFT** = Knowledge-Reasoned Allocation For Teams. An explainable task allocation system using structured knowledge and reasoning.
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Frontend | React + TypeScript + Vite + TailwindCSS v4 |
+| Backend | FastAPI + SQLAlchemy + Pydantic |
+| Database | SQLite (`backend/kraft.db`) |
+| State | React Query |
+
+## Repository Structure
+
+```
+KRAFT/
+├── frontend/     # React UI (src/components, pages, api/)
+├── backend/      # FastAPI (app/api/routes, app/services, app/db, app/schemas)
+├── docs/         # SETUP.md, DB_SCHEMA.md, ARCHITECTURE.md, CONTRIBUTING.md
+└── scripts/
+```
+
+## Key Conventions
+
+- **Backend**: Thin routes in `api/routes/`; core logic in `services/`; models in `db/`
+- **Reasoning**: `backend/app/services/reasoning.py` — FOPC + MCDM scoring, explainable allocations
+- **Schema**: See `docs/DB_SCHEMA.md` — team_members, skills, tasks, team_member_skills, task_required_skills
+- **Never commit**: `.env` files, `backend/kraft.db`
+- **Branches**: Feature branches → PR into `dev` (never direct to `main`)
+
+## Quick Reference
+
+- API docs: `http://localhost:8000/docs`
+- Frontend dev: `cd frontend && npm run dev` (port 5173)
+- Backend dev: `cd backend && uvicorn app.main:app --reload` (port 8000)
