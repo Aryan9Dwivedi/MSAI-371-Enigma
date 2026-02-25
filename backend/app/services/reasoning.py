@@ -614,7 +614,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     num_unassigned = len(unassigned)
     summary = f"Allocated {num_assigned} task(s). {num_unassigned} task(s) could not be assigned (no eligible member)."
 
-    # --- Overall explanation (Zeli enhancement) ---
+    # --- Overall explanation ---
     rejection_counts: dict[str, int] = {}
     for r in run_rejection_reasons:
         rejection_counts[r] = rejection_counts.get(r, 0) + 1
@@ -632,10 +632,6 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
         f"{_short_reason(k)} ({v})"
         for k, v in sorted(rejection_counts.items(), key=lambda x: x[1], reverse=True)
     ]
-    top_assignment_text = ", ".join(
-        f"{item['task_name']} -> {item['member_name']} ({item['score']})"
-        for item in run_top_assignments[:3]
-    ) or "No successful assignments"
     rejection_text = "; ".join(unique_rejections[:3]) if unique_rejections else "No rejection reasons"
     fallback_overall_explanation = "\n".join(
         [
@@ -678,7 +674,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
 
 
 # ---------------------------------------------------------------------------
-# Per-task explanation (Zeli enhancement)
+# Per-task explanation
 # ---------------------------------------------------------------------------
 
 

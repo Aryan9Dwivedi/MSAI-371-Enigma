@@ -41,27 +41,27 @@ import ConsoleHeader from '@/components/console/ConsoleHeader';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const strategies = [
-  { 
-    id: 'automatic', 
-    name: 'Automatic (Recommended)', 
+  {
+    id: 'automatic',
+    name: 'Automatic (Recommended)',
     description: 'Balanced optimization across all factors',
     icon: Zap
   },
-  { 
-    id: 'fast', 
-    name: 'Fast Assignment', 
+  {
+    id: 'fast',
+    name: 'Fast Assignment',
     description: 'Quick allocation with basic matching',
     icon: Clock
   },
-  { 
-    id: 'balanced', 
-    name: 'Balanced Workload', 
+  {
+    id: 'balanced',
+    name: 'Balanced Workload',
     description: 'Prioritize even distribution of work',
     icon: Scale
   },
-  { 
-    id: 'constraint_focused', 
-    name: 'Constraint Focused', 
+  {
+    id: 'constraint_focused',
+    name: 'Constraint Focused',
     description: 'Strict constraint satisfaction',
     icon: Shield
   }
@@ -76,6 +76,10 @@ export default function Allocation() {
   const [agents, setAgents] = useState([]);
   const [allocations, setAllocations] = useState([]);
   const [preStats, setPreStats] = useState(null);
+  const [runExplanation, setRunExplanation] = useState('');
+  const [runUnassignedTasks, setRunUnassignedTasks] = useState([]);
+  const [taskExplanation, setTaskExplanation] = useState('');
+  const [taskExplainLoading, setTaskExplainLoading] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('kraft_role', role);
@@ -109,6 +113,8 @@ export default function Allocation() {
     setIsRunning(true);
     try {
       const res = await kraftApi.allocate({ apply: false, strategy });
+      const overallExplanation = res.overall_explanation || res.summary || '';
+      setRunUnassignedTasks(res.unassigned_tasks || []);
       const mapped = (res.assignments || []).map((a) => ({
         id: `backend-${a.task_id}`,
         task_id: a.task_id,
@@ -121,12 +127,15 @@ export default function Allocation() {
         reasoning: {
           skill_match: a.constraints_satisfied?.join('; ') || '',
           constraint_satisfaction: a.constraints_satisfied?.join('; ') || '',
-          summary: a.explanation,
+          summary: overallExplanation,
           inference_trace: a.inference_trace,
           candidate_explanations: a.candidate_explanations,
         },
       }));
       setAllocations(mapped);
+      setRunExplanation(overallExplanation);
+      setSelectedAllocation(mapped[0] || null);
+      setTaskExplanation('');
       if (mapped.length > 0) {
         toast.success(res.summary || `Allocation completed (${mapped.length} assignment${mapped.length !== 1 ? 's' : ''})`);
       } else {
@@ -141,6 +150,58 @@ export default function Allocation() {
       toast.error(msg);
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const loadTaskExplanation = async (allocation) => {
+    if (!allocation) return;
+    setTaskExplainLoading(true);
+    try {
+      const chosen = allocation.reasoning?.candidate_explanations?.find((c) => c.chosen);
+      const eligible = (allocation.reasoning?.candidate_explanations || []).filter((c) => typeof c.score === 'number');
+      const bestAlt = eligible
+        .filter((c) => !c.chosen)
+        .slice()
+        .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      const topRejections = (allocation.reasoning?.candidate_explanations || [])
+        .flatMap((c) => c.rejection_reasons || [])
+        .slice(0, 5);
+
+      const payload = {
+        task_id: allocation.task_id,
+        task_name: getDisplayName(allocation),
+        team_member_id: allocation.agent_id,
+        team_member_name: getMemberName(allocation),
+        constraints_satisfied: allocation.reasoning?.constraint_satisfaction
+          ? allocation.reasoning.constraint_satisfaction.split(';').map((s) => s.trim()).filter(Boolean)
+          : [],
+        chosen_score: chosen?.score ?? null,
+        chosen_reasons: chosen?.reasons || [],
+        best_alternative: bestAlt ? { member_name: bestAlt.member_name, score: `${(bestAlt.score ?? 0).toFixed(3)}` } : null,
+        best_alternative_gap:
+          typeof chosen?.score === 'number' && typeof bestAlt?.score === 'number' ? +(chosen.score - bestAlt.score).toFixed(4) : null,
+        best_alternative_reasons: bestAlt?.reasons || [],
+        scoring_factors: [
+          'workload_fairness',
+          'experience',
+          'availability_richness',
+          'skill_breadth',
+          'delivery_speed',
+        ],
+        hard_rules: [
+          'All required skills must be present (AND match).',
+          'Calendar availability must be present.',
+          'Not overloaded (workload <= 10).',
+        ],
+        top_rejection_reasons: topRejections,
+      };
+
+      const res = await kraftApi.explainTask(payload);
+      setTaskExplanation(res.explanation || '');
+    } catch (e) {
+      setTaskExplanation('');
+    } finally {
+      setTaskExplainLoading(false);
     }
   };
 
@@ -169,10 +230,10 @@ export default function Allocation() {
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-slate-950 transition-colors">
       <ConsoleSidebar role={role} onRoleChange={setRole} />
-      
+
       <div className="flex-1 flex flex-col overflow-hidden">
         <ConsoleHeader role={role} onRoleChange={setRole} />
-        
+
         <main className="flex-1 overflow-y-auto p-6">
           <div className="max-w-7xl mx-auto space-y-6">
             {/* Header */}
@@ -197,11 +258,10 @@ export default function Allocation() {
                     <button
                       key={s.id}
                       onClick={() => setStrategy(s.id)}
-                      className={`p-4 rounded-xl border-2 text-left transition-all ${
-                        strategy === s.id 
-                          ? 'border-indigo-500 bg-indigo-50' 
-                          : 'border-slate-200 hover:border-slate-300'
-                      }`}
+                      className={`p-4 rounded-xl border-2 text-left transition-all ${strategy === s.id
+                        ? 'border-indigo-500 bg-indigo-50'
+                        : 'border-slate-200 hover:border-slate-300'
+                        }`}
                     >
                       <s.icon className={`w-5 h-5 mb-2 ${strategy === s.id ? 'text-indigo-600' : 'text-slate-400'}`} />
                       <p className="font-medium text-slate-800 text-sm">{s.name}</p>
@@ -222,7 +282,7 @@ export default function Allocation() {
                       Total: {preStats?.total_members ?? agents.length} members, {preStats?.total_tasks ?? tasks.length} tasks
                     </p>
                   </div>
-                  <Button 
+                  <Button
                     className="bg-indigo-600 hover:bg-indigo-700 gap-2"
                     disabled={isRunning}
                     onClick={runAllocation}
@@ -271,78 +331,80 @@ export default function Allocation() {
                       <TableBody>
                         <AnimatePresence>
                           {allocations.slice(0, 10).map((allocation) => (
-                              <motion.tr
-                                key={allocation.id}
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                className={`cursor-pointer hover:bg-slate-50 transition-colors ${
-                                  selectedAllocation?.id === allocation.id ? 'bg-indigo-50' : ''
+                            <motion.tr
+                              key={allocation.id}
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              className={`cursor-pointer hover:bg-slate-50 transition-colors ${selectedAllocation?.id === allocation.id ? 'bg-indigo-50' : ''
                                 }`}
-                                onClick={() => setSelectedAllocation(allocation)}
-                              >
-                                <TableCell>
-                                  <div>
-                                    <p className="font-medium text-slate-800">{getDisplayName(allocation)}</p>
-                                    <p className="text-xs text-slate-400">{getTaskById(allocation.task_id)?.priority}</p>
+                              onClick={() => {
+                                setSelectedAllocation(allocation);
+                                loadTaskExplanation(allocation);
+                              }}
+                            >
+                              <TableCell>
+                                <div>
+                                  <p className="font-medium text-slate-800">{getDisplayName(allocation)}</p>
+                                  <p className="text-xs text-slate-400">{getTaskById(allocation.task_id)?.priority}</p>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-2">
+                                  <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-medium text-indigo-700">
+                                    {getMemberName(allocation).charAt(0)}
                                   </div>
-                                </TableCell>
-                                <TableCell>
-                                  <div className="flex items-center gap-2">
-                                    <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-medium text-indigo-700">
-                                      {getMemberName(allocation).charAt(0)}
-                                    </div>
-                                    <span className="text-sm text-slate-700">{getMemberName(allocation)}</span>
-                                  </div>
-                                </TableCell>
-                                <TableCell>
-                                  <div className="flex items-center gap-2">
-                                    <Progress 
-                                      value={allocation.confidence} 
-                                      className="w-16 h-1.5 [&>div]:bg-emerald-500"
-                                    />
-                                    <span className="text-sm font-medium text-emerald-600">
-                                      {allocation.confidence}%
-                                    </span>
-                                  </div>
-                                </TableCell>
-                                <TableCell>
-                                  <Badge className={
-                                    allocation.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                                  <span className="text-sm text-slate-700">{getMemberName(allocation)}</span>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-2">
+                                  <Progress
+                                    value={allocation.confidence}
+                                    className="w-16 h-1.5 [&>div]:bg-emerald-500"
+                                  />
+                                  <span className="text-sm font-medium text-emerald-600">
+                                    {allocation.confidence}%
+                                  </span>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge className={
+                                  allocation.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
                                     allocation.status === 'rejected' ? 'bg-red-100 text-red-700' :
-                                    'bg-amber-100 text-amber-700'
-                                  }>
-                                    {allocation.status}
-                                  </Badge>
-                                </TableCell>
-                                <TableCell>
-                                  {allocation.status === 'proposed' && (
-                                    <div className="flex gap-1">
-                                      <Button 
-                                        size="icon" 
-                                        variant="ghost" 
-                                        className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          updateAllocationStatus(allocation.id, 'approved');
-                                        }}
-                                      >
-                                        <CheckCircle2 className="w-4 h-4" />
-                                      </Button>
-                                      <Button 
-                                        size="icon" 
-                                        variant="ghost" 
-                                        className="h-7 w-7 text-red-600 hover:text-red-700 hover:bg-red-50"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          updateAllocationStatus(allocation.id, 'rejected');
-                                        }}
-                                      >
-                                        <XCircle className="w-4 h-4" />
-                                      </Button>
-                                    </div>
-                                  )}
-                                </TableCell>
-                              </motion.tr>
+                                      'bg-amber-100 text-amber-700'
+                                }>
+                                  {allocation.status}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                {allocation.status === 'proposed' && (
+                                  <div className="flex gap-1">
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateAllocationStatus(allocation.id, 'approved');
+                                      }}
+                                    >
+                                      <CheckCircle2 className="w-4 h-4" />
+                                    </Button>
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-7 w-7 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateAllocationStatus(allocation.id, 'rejected');
+                                      }}
+                                    >
+                                      <XCircle className="w-4 h-4" />
+                                    </Button>
+                                  </div>
+                                )}
+                              </TableCell>
+                            </motion.tr>
                           ))}
                         </AnimatePresence>
                         {allocations.length === 0 && (
@@ -370,86 +432,112 @@ export default function Allocation() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {selectedAllocation ? (
+                    {runExplanation ? (
                       <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         className="space-y-4"
                       >
-                        <div className="p-4 bg-white rounded-xl border border-indigo-100">
-                          <div className="flex items-center gap-2 mb-3">
-                            <ArrowRight className="w-4 h-4 text-indigo-500" />
-                            <span className="font-medium text-slate-800">
-                              {getDisplayName(selectedAllocation)}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 text-sm text-slate-600">
-                            <div className="w-6 h-6 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-medium text-indigo-700">
-                              {getMemberName(selectedAllocation).charAt(0)}
-                            </div>
-                            {getMemberName(selectedAllocation)}
-                          </div>
-                        </div>
-
-                        <div className="space-y-3">
-                          {selectedAllocation.reasoning?.skill_match && (
-                            <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
-                              <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
-                              <div>
-                                <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Skill Match</p>
-                                <p className="text-sm text-slate-700 mt-1">{selectedAllocation.reasoning.skill_match}</p>
-                              </div>
-                            </div>
-                          )}
-
-                          {selectedAllocation.reasoning?.constraint_satisfaction && (
-                            <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
-                              <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
-                              <div>
-                                <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Constraints</p>
-                                <p className="text-sm text-slate-700 mt-1">{selectedAllocation.reasoning.constraint_satisfaction}</p>
-                              </div>
-                            </div>
-                          )}
-
-                          {selectedAllocation.reasoning?.load_balance && (
-                            <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
-                              <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
-                              <div>
-                                <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Workload</p>
-                                <p className="text-sm text-slate-700 mt-1">{selectedAllocation.reasoning.load_balance}</p>
-                              </div>
-                            </div>
-                          )}
-
-                          {selectedAllocation.reasoning?.inference_trace?.length > 0 && (
-                            <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
-                              <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Inference trace</p>
-                                <ol className="text-xs text-slate-700 mt-1 space-y-0.5 font-mono">
-                                  {selectedAllocation.reasoning.inference_trace.map((s) => (
-                                    <li key={s.step}>
-                                      {s.step}. {s.fact_or_derived}
-                                      {s.rule && <span className="block text-slate-500 pl-3">{s.rule}</span>}
-                                    </li>
-                                  ))}
-                                </ol>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
                         <div className="p-3 bg-indigo-100 rounded-lg">
-                          <p className="text-sm text-indigo-800">
-                            <strong>Summary:</strong> {selectedAllocation.reasoning?.summary}
+                          <p className="text-sm text-indigo-800 whitespace-pre-line">
+                            <strong>Run summary:</strong> {runExplanation}
                           </p>
                         </div>
+
+                        {runUnassignedTasks?.length > 0 && (
+                          <div className="p-3 bg-white rounded-lg border border-slate-100">
+                            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Unassigned tasks</p>
+                            <ul className="text-sm text-slate-700 mt-1 list-disc pl-5 space-y-0.5">
+                              {runUnassignedTasks.slice(0, 6).map((t) => (
+                                <li key={t.task_id}>{t.task_name}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        <div className="p-3 bg-white rounded-lg border border-slate-100">
+                          <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Task rationale</p>
+                          {taskExplainLoading ? (
+                            <p className="text-sm text-slate-500 mt-1">Generating explanation...</p>
+                          ) : (
+                            <p className="text-sm text-slate-700 mt-1 whitespace-pre-line">
+                              {taskExplanation || 'Click a task to load its explanation.'}
+                            </p>
+                          )}
+                        </div>
+
+                        {selectedAllocation ? (
+                          <>
+                            <div className="p-4 bg-white rounded-xl border border-indigo-100">
+                              <div className="flex items-center gap-2 mb-3">
+                                <ArrowRight className="w-4 h-4 text-indigo-500" />
+                                <span className="font-medium text-slate-800">
+                                  {getDisplayName(selectedAllocation)}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-sm text-slate-600">
+                                <div className="w-6 h-6 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-medium text-indigo-700">
+                                  {getMemberName(selectedAllocation).charAt(0)}
+                                </div>
+                                {getMemberName(selectedAllocation)}
+                              </div>
+                            </div>
+
+                            <div className="space-y-3">
+                              {selectedAllocation.reasoning?.skill_match && (
+                                <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
+                                  <div>
+                                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Skill Match</p>
+                                    <p className="text-sm text-slate-700 mt-1">{selectedAllocation.reasoning.skill_match}</p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {selectedAllocation.reasoning?.constraint_satisfaction && (
+                                <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
+                                  <div>
+                                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Constraints</p>
+                                    <p className="text-sm text-slate-700 mt-1">{selectedAllocation.reasoning.constraint_satisfaction}</p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {selectedAllocation.reasoning?.load_balance && (
+                                <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
+                                  <div>
+                                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Workload</p>
+                                    <p className="text-sm text-slate-700 mt-1">{selectedAllocation.reasoning.load_balance}</p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {selectedAllocation.reasoning?.inference_trace?.length > 0 && (
+                                <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Inference trace</p>
+                                    <ol className="text-xs text-slate-700 mt-1 space-y-0.5 font-mono">
+                                      {selectedAllocation.reasoning.inference_trace.map((s) => (
+                                        <li key={s.step}>
+                                          {s.step}. {s.fact_or_derived}
+                                          {s.rule && <span className="block text-slate-500 pl-3">{s.rule}</span>}
+                                        </li>
+                                      ))}
+                                    </ol>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </>
+                        ) : null}
                       </motion.div>
                     ) : (
                       <div className="text-center py-8 text-slate-400">
                         <Lightbulb className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                        <p className="text-sm">Select an allocation to see the reasoning</p>
+                        <p className="text-sm">Run allocation to see the reasoning summary</p>
                       </div>
                     )}
                   </CardContent>
