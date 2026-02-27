@@ -18,22 +18,37 @@ from app.core.config import settings
 
 
 def _post_chat_completion(messages: list[dict[str, str]]) -> str | None:
-    """Call OpenAI-compatible chat completions endpoint and return message content."""
+    """Call OpenAI-compatible or Azure OpenAI chat completions endpoint and return message content."""
     api_key = (settings.LLM_API_KEY or os.getenv("OPENAI_API_KEY", "")).strip()
     base_url = settings.LLM_BASE_URL.rstrip("/")
+    is_azure = settings.LLM_PROVIDER.lower() == "azure"
+
     # Allow keyless calls for local OpenAI-compatible providers (for example Ollama).
-    if not api_key and not (
+    if not api_key and not is_azure and not (
         base_url.startswith("http://localhost")
         or base_url.startswith("http://127.0.0.1")
     ):
         return None
-    url = f"{base_url}/chat/completions"
-    payload = {
-        "model": settings.LLM_MODEL,
-        "temperature": settings.LLM_TEMPERATURE,
-        "messages": messages,
-        "max_tokens": 220,
-    }
+
+    if is_azure:
+        # Azure OpenAI: URL includes deployment name; model is inferred from the deployment.
+        api_version = settings.AZURE_OPENAI_API_VERSION
+        url = f"{base_url}/openai/deployments/{settings.LLM_MODEL}/chat/completions?api-version={api_version}"
+        payload: dict = {
+            "temperature": settings.LLM_TEMPERATURE,
+            "messages": messages,
+            "max_tokens": 220,
+        }
+    else:
+        # Standard OpenAI / compatible providers.
+        url = f"{base_url}/chat/completions"
+        payload = {
+            "model": settings.LLM_MODEL,
+            "temperature": settings.LLM_TEMPERATURE,
+            "messages": messages,
+            "max_tokens": 220,
+        }
+
     data = json.dumps(payload).encode("utf-8")
     req = urllib_request.Request(
         url=url,
@@ -41,8 +56,13 @@ def _post_chat_completion(messages: list[dict[str, str]]) -> str | None:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    # Local OpenAI-compatible providers (for example Ollama) may not require auth.
-    if api_key:
+
+    if is_azure:
+        # Azure uses the api-key header for authentication.
+        req.add_header("api-key", api_key)
+        print(f"🚀 Making request to Azure OpenAI URL: {url}") 
+    elif api_key:
+        # Standard OpenAI Bearer token auth.
         req.add_header("Authorization", f"Bearer {api_key}")
     try:
         with urllib_request.urlopen(req, timeout=settings.LLM_TIMEOUT_SECONDS) as resp:
