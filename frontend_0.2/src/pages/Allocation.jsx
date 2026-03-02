@@ -181,19 +181,20 @@ export default function Allocation() {
         best_alternative_gap:
           typeof chosen?.score === 'number' && typeof bestAlt?.score === 'number' ? +(chosen.score - bestAlt.score).toFixed(4) : null,
         best_alternative_reasons: bestAlt?.reasons || [],
-        scoring_factors: [
-          'workload_fairness',
-          'experience',
-          'availability_richness',
-          'skill_breadth',
-          'delivery_speed',
-        ],
+        scoring_factors: strategy === 'fast'
+          ? ['workload', 'availability']
+          : strategy === 'balanced'
+            ? ['workload']
+            : strategy === 'constraint_focused'
+              ? ['workload (tiebreaker)']
+              : ['workload_fairness', 'experience', 'availability_richness', 'skill_breadth', 'delivery_speed'],
         hard_rules: [
           'All required skills must be present (AND match).',
           'Calendar availability must be present.',
           'Not overloaded (workload <= 10).',
         ],
         top_rejection_reasons: topRejections,
+        strategy,
       };
 
       const res = await kraftApi.explainTask(payload);

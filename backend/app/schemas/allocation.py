@@ -151,6 +151,10 @@ class ExplainTaskRequest(BaseModel):
     scoring_factors: list[str] = Field(default_factory=list)
     hard_rules: list[str] = Field(default_factory=list)
     top_rejection_reasons: list[str] = Field(default_factory=list)
+    strategy: AllocationStrategy = Field(
+        default=AllocationStrategy.AUTOMATIC,
+        description="Allocation strategy used, so the explanation reflects the correct prioritization.",
+    )
 
 
 class ExplainTaskResponse(BaseModel):

@@ -633,26 +633,53 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
         for k, v in sorted(rejection_counts.items(), key=lambda x: x[1], reverse=True)
     ]
     rejection_text = "; ".join(unique_rejections[:3]) if unique_rejections else "No rejection reasons"
+
+    # Per-strategy scoring factors and fallback scoring description
+    strategy = request.strategy
+    if strategy == AllocationStrategy.AUTOMATIC:
+        scoring_factors = [
+            "workload_fairness",
+            "experience",
+            "availability_richness",
+            "skill_breadth",
+            "delivery_speed",
+        ]
+        scoring_description = (
+            "Candidates were scored across five factors: workload fairness, experience, "
+            "schedule availability, breadth of skills, and estimated delivery speed."
+        )
+    elif strategy == AllocationStrategy.FAST:
+        scoring_factors = ["workload", "availability"]
+        scoring_description = (
+            "Only current workload (70%) and calendar availability (30%) were scored — "
+            "the goal was quick assignment."
+        )
+    elif strategy == AllocationStrategy.BALANCED:
+        scoring_factors = ["workload"]
+        scoring_description = (
+            "The person with the fewest existing tasks was always chosen, "
+            "to keep work distributed evenly across the team."
+        )
+    else:  # CONSTRAINT_FOCUSED
+        scoring_factors = ["workload (tiebreaker)"]
+        scoring_description = (
+            "All hard requirements had to be met first; "
+            "workload was only used to break ties between equally qualified candidates."
+        )
+
+    hard_rules = [
+        "Must have all required skills.",
+        "Must be available on their calendar.",
+        "Must not be overloaded (no more than 10 active tasks).",
+    ]
     fallback_overall_explanation = "\n".join(
         [
-            f"- Outcome: assigned {num_assigned}/{len(tasks)} tasks; unassigned {num_unassigned}.",
-            "- Hard rules: required skills + availability + not overloaded (workload <= 10).",
-            "- Scoring: MCDM (workload_fairness, experience, availability_richness, skill_breadth, delivery_speed).",
-            f"- Rejections: {rejection_text}.",
+            f"- {num_assigned} out of {len(tasks)} tasks were assigned; {num_unassigned} could not be filled. Strategy used: {strategy.value.replace('_', ' ').title()}.",
+            "- Every candidate had to meet three hard requirements: possess all required skills, have calendar availability, and not be overloaded with existing work.",
+            f"- {scoring_description}",
+            f"- {num_unassigned} task(s) went unassigned. Top reasons: {rejection_text}.",
         ]
     )
-    hard_rules = [
-        "All required skills must be present (AND match).",
-        "Calendar availability must be present.",
-        "Not overloaded (workload <= 10).",
-    ]
-    scoring_factors = [
-        "workload_fairness",
-        "experience",
-        "availability_richness",
-        "skill_breadth",
-        "delivery_speed",
-    ]
     overall_explanation = maybe_generate_run_explanation(
         total_tasks_considered=len(tasks),
         assigned_count=num_assigned,
@@ -662,6 +689,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
         scoring_factors=scoring_factors,
         hard_rules=hard_rules,
         fallback_text=fallback_overall_explanation,
+        strategy=strategy.value,
     )
 
     return AllocateResponse(
@@ -681,22 +709,45 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
 def explain_task(request: ExplainTaskRequest) -> ExplainTaskResponse:
     """Generate a detailed explanation for a single task assignment."""
     hard_rules = request.hard_rules or [
-        "All required skills must be present (AND match).",
-        "Calendar availability must be present.",
-        "Not overloaded (workload <= 10).",
+        "Must have all required skills.",
+        "Must be available on their calendar.",
+        "Must not be overloaded (no more than 10 active tasks).",
     ]
-    scoring_factors = request.scoring_factors or [
-        "workload_fairness",
-        "experience",
-        "availability_richness",
-        "skill_breadth",
-        "delivery_speed",
-    ]
+
+    # Use strategy-appropriate default scoring factors when the caller doesn't supply them
+    strategy = request.strategy
+    if request.scoring_factors:
+        scoring_factors = request.scoring_factors
+    elif strategy == AllocationStrategy.FAST:
+        scoring_factors = ["workload", "availability"]
+    elif strategy == AllocationStrategy.BALANCED:
+        scoring_factors = ["workload"]
+    elif strategy == AllocationStrategy.CONSTRAINT_FOCUSED:
+        scoring_factors = ["workload (tiebreaker)"]
+    else:  # AUTOMATIC (default)
+        scoring_factors = [
+            "workload_fairness",
+            "experience",
+            "availability_richness",
+            "skill_breadth",
+            "delivery_speed",
+        ]
+
+    if strategy == AllocationStrategy.AUTOMATIC:
+        selection_desc = "scored highest across workload fairness, experience, schedule availability, breadth of skills, and estimated delivery speed"
+    elif strategy == AllocationStrategy.FAST:
+        selection_desc = "had the best combination of low workload and calendar availability"
+    elif strategy == AllocationStrategy.BALANCED:
+        selection_desc = "had the fewest existing tasks, keeping the team balanced"
+    else:
+        selection_desc = "met all hard requirements and had the lightest workload among qualified candidates"
+
+    strategy_label = strategy.value.replace("_", " ").title()
     fallback = "\n".join(
         [
-            f"- {request.team_member_name} assigned to {request.task_name}.",
-            "- Eligible via required skills + availability + not overloaded.",
-            f"- Selected by MCDM ({', '.join(scoring_factors)}).",
+            f"- {request.team_member_name} was assigned to \"{request.task_name}\" using the {strategy_label} strategy.",
+            "- They met all requirements: has the required skills, is available, and is not overloaded.",
+            f"- They were chosen because they {selection_desc}.",
         ]
     )
     explanation = maybe_generate_task_explanation(
@@ -712,6 +763,7 @@ def explain_task(request: ExplainTaskRequest) -> ExplainTaskResponse:
         best_alternative_reasons=request.best_alternative_reasons,
         top_rejection_reasons=request.top_rejection_reasons,
         fallback_text=fallback,
+        strategy=strategy.value,
     )
     return ExplainTaskResponse(
         task_id=request.task_id,
