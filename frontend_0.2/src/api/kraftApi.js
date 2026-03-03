@@ -6,7 +6,7 @@ const BASE = _env && !_env.includes('5173') ? _env : 'http://localhost:8000';
 export const kraftApi = {
   async allocate(options = {}) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 120000);
     const res = await fetch(`${BASE}/allocate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -14,6 +14,8 @@ export const kraftApi = {
         task_ids: options.taskIds ?? null,
         team_member_ids: options.teamMemberIds ?? null,
         apply: options.apply ?? false,
+        force_round: options.forceRound ?? false,
+        prior_assignments: options.priorAssignments ?? null,
       }),
       signal: controller.signal,
     });
@@ -35,6 +37,23 @@ export const kraftApi = {
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || `Stats fetch failed: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async explainTask(payload) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000);
+    const res = await fetch(`${BASE}/allocate/explain_task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `Explain task failed: ${res.status}`);
     }
     return res.json();
   },

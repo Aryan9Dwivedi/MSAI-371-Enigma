@@ -1,0 +1,12 @@
+---
+description: React + TypeScript + Tailwind patterns for frontend
+globs: frontend/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Frontend Patterns
+
+- Use functional components with hooks
+- React Query for API fetching; colocate in `api/` or hooks
+- TailwindCSS v4 for styling
+- TypeScript: prefer explicit types for props and API responses

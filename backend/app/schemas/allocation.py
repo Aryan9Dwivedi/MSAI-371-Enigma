@@ -1,6 +1,13 @@
 from pydantic import BaseModel, Field
 
 
+class PriorAssignment(BaseModel):
+    """Prior assignment from a previous run (used for second-round workload)."""
+
+    task_id: int
+    team_member_id: int
+
+
 class AllocateRequest(BaseModel):
     """Optional filters for allocation. If empty, allocates all unassigned tasks."""
 
@@ -15,6 +22,14 @@ class AllocateRequest(BaseModel):
     apply: bool = Field(
         default=False,
         description="If True, persist assignments to the database.",
+    )
+    force_round: bool = Field(
+        default=False,
+        description="If True, use relaxed rules (partial skill match) for second-round allocation.",
+    )
+    prior_assignments: list[PriorAssignment] | None = Field(
+        default=None,
+        description="Assignments from first round; used to compute workload for second round.",
     )
 
 
@@ -36,6 +51,10 @@ class AssignmentExplanation(BaseModel):
         default=None,
         description="Final weighted score if candidate was considered.",
     )
+    years_of_experience: int | None = Field(default=None, description="Years of experience for natural-language explanation.")
+    current_workload: int | None = Field(default=None, description="Number of tasks already assigned this run.")
+    predicted_hours: float | None = Field(default=None, description="Estimated hours to complete this task.")
+    availability_slots: int | None = Field(default=None, description="Number of calendar slots (proxy for hours available).")
 
 
 class InferenceStep(BaseModel):
@@ -63,6 +82,10 @@ class Assignment(BaseModel):
     team_member_id: int
     team_member_name: str
     score: float = Field(description="Weighted score used for selection.")
+    force_assigned: bool = Field(
+        default=False,
+        description="True if assigned in second round with partial skill match.",
+    )
     explanation: str = Field(
         description="Human-readable summary (e.g. 'Alice assigned because she has Python + availability, workload below average').",
     )
@@ -80,6 +103,15 @@ class Assignment(BaseModel):
     )
 
 
+class UnassignedTask(BaseModel):
+    task_id: int
+    task_name: str
+    reason: str | None = Field(
+        default=None,
+        description="Natural-language reason why this task could not be assigned (e.g. 'No team member has DevOps & CI/CD').",
+    )
+
+
 class AllocateResponse(BaseModel):
     """Result of the allocation reasoning run."""
 
@@ -94,3 +126,51 @@ class AllocateResponse(BaseModel):
     summary: str = Field(
         description="Brief summary of the allocation run.",
     )
+    overall_explanation: str | None = Field(
+        default=None,
+        description="Holistic natural-language explanation for the whole allocation run.",
+    )
+    unassigned_tasks: list[UnassignedTask] = Field(
+        default_factory=list,
+        description="Task IDs and names that could not be assigned.",
+    )
+
+
+class ExplainTaskRequest(BaseModel):
+    task_id: int
+    task_name: str
+    team_member_id: int
+    team_member_name: str
+    constraints_satisfied: list[str] = Field(default_factory=list)
+    chosen_score: float | None = None
+    chosen_reasons: list[str] = Field(
+        default_factory=list,
+        description="Evidence lines for the chosen candidate (e.g., predicted time and factor contributions).",
+    )
+    best_alternative: dict[str, str] | None = Field(
+        default=None,
+        description="Best alternative candidate (member_name, score).",
+    )
+    best_alternative_gap: float | None = Field(
+        default=None,
+        description="chosen_score - best_alternative.score (positive means the chosen candidate is higher).",
+    )
+    best_alternative_reasons: list[str] = Field(default_factory=list)
+    scoring_factors: list[str] = Field(default_factory=list)
+    hard_rules: list[str] = Field(default_factory=list)
+    top_rejection_reasons: list[str] = Field(default_factory=list)
+    # Rich data for natural-language explanation (no jargon)
+    chosen_years_of_experience: int | None = None
+    chosen_current_workload: int | None = None
+    chosen_predicted_hours: float | None = None
+    chosen_availability_slots: int | None = None
+    runner_up_years_of_experience: int | None = None
+    runner_up_current_workload: int | None = None
+    runner_up_predicted_hours: float | None = None
+    runner_up_availability_slots: int | None = None
+
+
+class ExplainTaskResponse(BaseModel):
+    task_id: int
+    team_member_id: int
+    explanation: str

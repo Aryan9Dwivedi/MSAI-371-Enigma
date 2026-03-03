@@ -5,7 +5,8 @@ Thumbs.db
 .idea/
 
 # --- Python ---
-backend/.venv/
+**/.venv/
+**/venv/
 **/__pycache__/
 **/*.pyc
 **/*.pyo
@@ -19,11 +20,16 @@ backend/.venv/
 backend/*.db
 backend/*.sqlite
 backend/*.sqlite3
+kraft.db
 
 # --- Node / Frontend ---
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
+**/node_modules/
+**/dist/
+**/.vite/
 
 # --- Logs ---
 *.log
+**/logs/
+
+# --- Temp / generated ---
+**/requirements.utf8.txt

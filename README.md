@@ -11,7 +11,9 @@ KRAFT combines knowledge representation with reasoning logic to solve the task a
 **Key features:**
 - Skill-based matching between tasks and team members
 - Availability-aware scheduling
-- Explainable reasoning for all allocations
+- Explainable reasoning for all allocations (natural-language "Why X over Y")
+- Second-round allocation with partial skill match when no full match exists
+- Run summary and per-task rationale
 - Clean, intuitive interface for team management
 
 ---
@@ -31,11 +33,11 @@ KRAFT combines knowledge representation with reasoning logic to solve the task a
 
 ```
 KRAFT/
-├── frontend/          # React UI application
+├── frontend_0.2/      # React UI application (Allocation, Tasks, etc.)
 ├── backend/           # FastAPI backend + reasoning logic
-├── docs/              # Documentation, screenshots, setup guides
-├── scripts/           # Helper scripts for development
-└── README.md          # This file
+├── docs/              # Documentation
+├── scripts/           # Helper scripts
+└── README.md
 ```
 
 ---
@@ -70,10 +72,10 @@ This guide includes step-by-step instructions for:
 
 ## 📚 Documentation
 
+- **`docs/README.md`** — Documentation index (start here)
 - **`docs/SETUP.md`** — Complete setup and installation guide
-- **`docs/DB_SCHEMA.md`** — Database schema (tables, fields, relations) — single source of truth
+- **`docs/DB_SCHEMA.md`** — Database schema (tables, fields, relations)
 - **`docs/ARCHITECTURE.md`** — System design and reasoning logic
-- **`docs/CONTRIBUTING.md`** — Contribution guidelines and branch workflow
 
 ---
 
@@ -81,7 +83,7 @@ This guide includes step-by-step instructions for:
 
 ### Frontend
 ```bash
-cd frontend
+cd frontend_0.2
 npm install
 npm run dev
 ```
@@ -90,13 +92,12 @@ Frontend runs at: `http://localhost:5173`
 ### Backend
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+./start-dev.sh   # or: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-Backend runs at: `http://localhost:8000`
-API docs: `http://localhost:8000/docs`
+Backend runs at: `http://localhost:8000`. Use `--reload` for auto-restart on code changes.
 
 ### Both Together
 Run the frontend and backend in separate terminals simultaneously for local development.
@@ -116,10 +117,10 @@ KRAFT uses **SQLite** for local development. Data is stored in `backend/kraft.db
 - Use the **SQLite** VS Code extension (by alexcvzz) to browse tables and data
 - View API docs at `http://localhost:8000/docs`
 
-**Seed sample data (optional):**
+**Seed demo data:**
 ```bash
 cd backend
-python seed.py
+python3 seed.py --force   # Resets and inserts 9 tasks, 7 members, 3 unassigned for second-round demo
 ```
 
 ---

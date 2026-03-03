@@ -1,0 +1,18 @@
+---
+description: FastAPI + SQLAlchemy patterns for backend
+globs: backend/**/*.py
+alwaysApply: false
+---
+
+# Backend Patterns
+
+- Keep routes thin; put logic in `services/`
+- Use Pydantic schemas for request/response validation
+- SQLAlchemy models in `app/db/`; session via `get_db`
+- Reasoning logic in `app/services/reasoning.py`
+
+# Dev Workflow
+
+- **Start backend with `--reload`** so it auto-restarts on code changes:
+  `cd backend && source venv/bin/activate && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`
+- **After editing backend Python files**: If the user reports "刷新不出来" or "can't refresh", run the restart command (kill port 8000, then start with --reload).
