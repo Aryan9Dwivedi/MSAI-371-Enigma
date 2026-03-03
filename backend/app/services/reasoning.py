@@ -44,6 +44,9 @@ RULE_ELIGIBLE = "eligible(M,T) ← member(M) ∧ can_perform(M,T) ∧ available(
 RULE_PREFERRED = "preferred(M,T,S) ← eligible(M,T) ∧ S = multi_factor_score(M,T)"
 RULE_BEST = "best_candidate(M,T) ← preferred(M,T,S) ∧ ∀M′: S ≥ S′"
 
+# Max tasks per person per run — prevents one person taking all tasks
+OVERLOAD_LIMIT = 3
+
 
 def _domain_required_skills(engine: LogicEngine, subst: dict) -> list:
     """Domain for ∀S: yields all S such that requires_skill(T, S)."""
@@ -68,7 +71,7 @@ def build_engine_from_kb(members: list["TeamMember"], tasks: list["Task"]) -> Lo
         engine.assert_fact("workload", m.id, w)
         if m.calendar_availability:
             engine.assert_fact("available", m.id)
-        if w > 10:
+        if w > OVERLOAD_LIMIT:
             engine.assert_fact("overloaded", m.id)
         for s in m.skills:
             engine.assert_fact("has_skill", m.id, s.id)
@@ -351,6 +354,154 @@ class _CandidateResult:
     score: float
     reasons: list[str]
     rejection_reasons: list[str] | None
+    years_of_experience: int | None = None
+    current_workload: int | None = None
+    predicted_hours: float | None = None
+    availability_slots: int | None = None
+
+
+def _run_force_round(
+    db: Session,
+    request: AllocateRequest,
+    tasks: list,
+    members: list,
+) -> AllocateResponse:
+    """
+    Second-round allocation: relax skill requirement to partial match.
+    Picks the member with highest skill overlap, then workload fairness, then experience.
+    """
+    from app.db.models import Task, TeamMember
+
+    workload_map: dict[int, int] = {m.id: 0 for m in members}
+    if request.prior_assignments:
+        for pa in request.prior_assignments:
+            workload_map[pa.team_member_id] = workload_map.get(pa.team_member_id, 0) + 1
+
+    assignments: list[Assignment] = []
+    unassigned_tasks: list[UnassignedTask] = []
+    run_top_assignments: list[dict[str, str]] = []
+
+    for task in tasks:
+        required_skill_ids = {s.id for s in (task.required_skills or [])}
+        required_names = [s.skill_name for s in (task.required_skills or [])]
+
+        # Candidates: available and not overloaded
+        candidates: list[tuple["TeamMember", float, int, int]] = []
+        for m in members:
+            if not m.calendar_availability:
+                continue
+            w = workload_map.get(m.id, 0)
+            if w >= OVERLOAD_LIMIT:
+                continue
+            member_skill_ids = {s.id for s in (m.skills or [])}
+            overlap = len(required_skill_ids & member_skill_ids) / len(required_skill_ids) if required_skill_ids else 0
+            candidates.append((m, overlap, w, m.years_of_experience or 0))
+
+        if not candidates:
+            unassigned_tasks.append(
+                UnassignedTask(
+                    task_id=task.id,
+                    task_name=task.task_name,
+                    reason="No team member available or all overloaded.",
+                )
+            )
+            continue
+
+        # Sort: partial match desc, workload asc, experience desc
+        candidates.sort(key=lambda x: (-x[1], x[2], -x[3]))
+        chosen = candidates[0][0]
+        overlap = candidates[0][1]
+        chosen_id = chosen.id
+        chosen_w = candidates[0][2]
+        chosen_exp = candidates[0][3]
+
+        overlap_pct = round(overlap * 100)
+        constraints = [f"Partial skill match: {overlap_pct}% (second round)"]
+        if chosen.calendar_availability:
+            constraints.append("Has availability")
+
+        # Build candidate_explanations for "Why X over Y" (top 3)
+        candidate_explanations = []
+        for i, (m, ov, w, exp) in enumerate(candidates[:3]):
+            reasons = [
+                f"Partial match: {round(ov * 100)}%",
+                f"Workload: {w} task(s) this run",
+                f"Experience: {exp} years",
+            ]
+            candidate_explanations.append(
+                AssignmentExplanation(
+                    member_id=m.id,
+                    member_name=m.name,
+                    chosen=(m.id == chosen_id),
+                    reasons=reasons,
+                    rejection_reasons=None,
+                    score=ov,
+                    years_of_experience=exp,
+                    current_workload=w,
+                )
+            )
+
+        # Natural "Why X over Y" explanation — clear, one-glance
+        runners = [c for c in candidates[1:3] if c[0].id != chosen_id]
+        if runners:
+            runner_names = " and ".join(r[0].name for r in runners)
+            reasons = []
+            for m, ov, w, exp in runners:
+                if ov < overlap:
+                    reasons.append(f"{m.name} had only {round(ov * 100)}% overlap")
+                elif w > chosen_w:
+                    reasons.append(f"{m.name} had {w} task(s) vs {chosen.name}'s {chosen_w}")
+                elif exp < chosen_exp:
+                    reasons.append(f"{chosen.name} has {chosen_exp} yrs experience vs {m.name}'s {exp}")
+            why = ". ".join(reasons[:2]) if reasons else f"lower workload ({chosen_w} task(s)) and experience ({chosen_exp} yrs)"
+            explanation = (
+                f"We chose {chosen.name} over {runner_names} for \"{task.task_name}\" — "
+                f"{chosen.name} scored {overlap_pct}% skill overlap. {why}."
+            )
+        else:
+            explanation = (
+                f"{chosen.name} assigned to {task.task_name} — "
+                f"best partial match ({overlap_pct}% of required skills)."
+            )
+
+        assignments.append(
+            Assignment(
+                task_id=task.id,
+                task_name=task.task_name,
+                team_member_id=chosen_id,
+                team_member_name=chosen.name,
+                score=overlap,
+                explanation=explanation,
+                constraints_satisfied=constraints,
+                inference_trace=[],
+                candidate_explanations=candidate_explanations,
+                force_assigned=True,
+            )
+        )
+        run_top_assignments.append({
+            "task_name": task.task_name,
+            "member_name": chosen.name,
+            "score": f"{overlap:.2f}",
+        })
+        workload_map[chosen_id] = workload_map.get(chosen_id, 0) + 1
+
+    num_assigned = len(assignments)
+    num_unassigned = len(unassigned_tasks)
+    summary = f"Second round: force-assigned {num_assigned} task(s). {num_unassigned} still unassigned."
+    overall = (
+        f"Second round allocated {num_assigned} of {len(tasks)} remaining tasks using partial skill match. "
+        f"We picked the best-fit member for each (highest skill overlap, then workload fairness, then experience)."
+    )
+    if num_unassigned > 0:
+        overall += f" {num_unassigned} could not be assigned (all members overloaded or unavailable)."
+
+    return AllocateResponse(
+        assignments=assignments,
+        unassigned_task_ids=[u.task_id for u in unassigned_tasks],
+        summary=summary,
+        overall_explanation=overall,
+        unassigned_tasks=unassigned_tasks,
+    )
 
 
 def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
@@ -371,6 +522,9 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     if request.team_member_ids is not None:
         member_query = member_query.filter(TeamMember.id.in_(request.team_member_ids))
     members = member_query.all()
+
+    if request.force_round and request.task_ids and tasks:
+        return _run_force_round(db, request, tasks, members)
 
     if not tasks or not members:
         return AllocateResponse(
@@ -457,13 +611,34 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
                     f"Skill breadth {factors['skill_breadth']:.2f} × w{weights['skill_breadth']:.2f} = {weighted['skill_breadth']:.2f}",
                     f"Delivery speed {factors['delivery_speed']:.2f} × w{weights['delivery_speed']:.2f} = {weighted['delivery_speed']:.2f}",
                 ]
-                candidates.append(_CandidateResult(m.id, m.name, True, score, reasons, None))
+                avail_slots = len([x for x in (m.calendar_availability or "").split(",") if x.strip()]) if m.calendar_availability else 0
+                candidates.append(
+                    _CandidateResult(
+                        m.id, m.name, True, score, reasons, None,
+                        years_of_experience=m.years_of_experience,
+                        current_workload=workload_map.get(m.id, 0),
+                        predicted_hours=pred_h,
+                        availability_slots=avail_slots,
+                    )
+                )
             else:
-                candidates.append(_CandidateResult(m.id, m.name, False, 0.0, [], get_rejection(m.id)))
+                candidates.append(_CandidateResult(m.id, m.name, False, 0.0, [], get_rejection(m.id), None, None, None, None))
 
         if not eligible_ids:
             unassigned.append(task.id)
-            unassigned_tasks.append(UnassignedTask(task_id=task.id, task_name=task.task_name))
+            required_skill_names = [
+                kb.skill_name.get(sid, str(sid))
+                for (tid, sid) in engine.facts.get("requires_skill", set())
+                if tid == task.id
+            ]
+            reason = (
+                f"No team member has required skills: {', '.join(required_skill_names)}"
+                if required_skill_names
+                else "No eligible team member (skills or availability)"
+            )
+            unassigned_tasks.append(
+                UnassignedTask(task_id=task.id, task_name=task.task_name, reason=reason)
+            )
             continue
 
         # best_candidate: max multi-factor score among eligible
@@ -505,6 +680,10 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
                 reasons=c.reasons,
                 rejection_reasons=c.rejection_reasons,
                 score=c.score if c.eligible else None,
+                years_of_experience=c.years_of_experience,
+                current_workload=c.current_workload,
+                predicted_hours=c.predicted_hours,
+                availability_slots=c.availability_slots,
             )
             for c in candidates
         ]
@@ -534,20 +713,21 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
             }
         )
 
+        # Always update workload for next task (even when apply=False) so allocation is balanced
+        old_w = workload_map.get(chosen_id, 0)
+        new_w = old_w + 1
+        workload_map[chosen_id] = new_w
+        kb.workload[chosen_id] = new_w
+        max_workload = max(workload_map.values(), default=0)
+        engine.facts.setdefault("workload", set()).discard((chosen_id, old_w))
+        engine.facts["workload"].add((chosen_id, new_w))
+        if new_w > OVERLOAD_LIMIT:
+            engine.facts.setdefault("overloaded", set()).add((chosen_id,))
+        elif old_w >= OVERLOAD_LIMIT and new_w <= OVERLOAD_LIMIT:
+            engine.facts.get("overloaded", set()).discard((chosen_id,))
+
         if request.apply:
             task.assignee_id = chosen_id
-            old_w = workload_map.get(chosen_id, 0)
-            new_w = old_w + 1
-            workload_map[chosen_id] = new_w
-            kb.workload[chosen_id] = new_w
-            max_workload = max(workload_map.values(), default=0)
-            # Update engine facts for next iteration
-            engine.facts.setdefault("workload", set()).discard((chosen_id, old_w))
-            engine.facts["workload"].add((chosen_id, new_w))
-            if new_w > 10:
-                engine.facts.setdefault("overloaded", set()).add((chosen_id,))
-            elif old_w >= 10 and new_w <= 10:
-                engine.facts.get("overloaded", set()).discard((chosen_id,))
 
     if request.apply:
         db.commit()
@@ -579,7 +759,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     fallback_overall_explanation = "\n".join(
         [
             f"- Outcome: assigned {num_assigned}/{len(tasks)} tasks; unassigned {num_unassigned}.",
-            "- Hard rules: required skills + availability + not overloaded (workload <= 10).",
+            f"- Hard rules: required skills + availability + not overloaded (max {OVERLOAD_LIMIT} tasks per run).",
             "- Scoring: MCDM (workload_fairness, experience, availability_richness, skill_breadth, delivery_speed).",
             f"- Rejections: {rejection_text}.",
         ]
@@ -587,7 +767,7 @@ def run_allocation(db: Session, request: AllocateRequest) -> AllocateResponse:
     hard_rules = [
         "All required skills must be present (AND match).",
         "Calendar availability must be present.",
-        "Not overloaded (workload <= 10).",
+        f"Not overloaded (max {OVERLOAD_LIMIT} tasks per run).",
     ]
     scoring_factors = [
         "workload_fairness",
@@ -620,7 +800,7 @@ def explain_task(request: ExplainTaskRequest) -> ExplainTaskResponse:
     hard_rules = request.hard_rules or [
         "All required skills must be present (AND match).",
         "Calendar availability must be present.",
-        "Not overloaded (workload <= 10).",
+        "Not overloaded (workload <= 3 tasks per run).",
     ]
     scoring_factors = request.scoring_factors or [
         "workload_fairness",
@@ -633,7 +813,7 @@ def explain_task(request: ExplainTaskRequest) -> ExplainTaskResponse:
         [
             f"- {request.team_member_name} assigned to {request.task_name}.",
             "- Eligible via required skills + availability + not overloaded.",
-            f"- Selected by MCDM ({', '.join(scoring_factors)}).",
+            f"- Selected by multi-factor scoring ({', '.join(scoring_factors)}).",
         ]
     )
     explanation = maybe_generate_task_explanation(
@@ -649,6 +829,14 @@ def explain_task(request: ExplainTaskRequest) -> ExplainTaskResponse:
         best_alternative_reasons=request.best_alternative_reasons,
         top_rejection_reasons=request.top_rejection_reasons,
         fallback_text=fallback,
+        chosen_years_of_experience=request.chosen_years_of_experience,
+        chosen_current_workload=request.chosen_current_workload,
+        chosen_predicted_hours=request.chosen_predicted_hours,
+        chosen_availability_slots=request.chosen_availability_slots,
+        runner_up_years_of_experience=request.runner_up_years_of_experience,
+        runner_up_current_workload=request.runner_up_current_workload,
+        runner_up_predicted_hours=request.runner_up_predicted_hours,
+        runner_up_availability_slots=request.runner_up_availability_slots,
     )
     return ExplainTaskResponse(
         task_id=request.task_id,

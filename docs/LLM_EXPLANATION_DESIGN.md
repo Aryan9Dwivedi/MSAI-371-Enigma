@@ -69,7 +69,7 @@ Example deployment modes:
 
 ## Explanation Flows
 
-## A) Run-Level Explanation
+### A) Run-Level Explanation (Run Summary)
 
 Input evidence includes:
 
@@ -81,14 +81,15 @@ Input evidence includes:
 
 Output target:
 
-- Exactly 4 compact bullets
-- Outcome, hard-rule gate, scoring interpretation, rejection summary
+- **Natural-language paragraphs** (no jargon, no bullet lists)
+- Outcome, workload distribution, and unassigned reason
+- User-facing plain English for non-technical readers
 
 Fallback behavior:
 
 - A deterministic summary string is returned if generation fails.
 
-## B) Task-Level Explanation (Lazy Loaded)
+### B) Task-Level Explanation (Lazy Loaded)
 
 Input evidence includes:
 
@@ -101,13 +102,23 @@ Input evidence includes:
 
 Output target:
 
-- Exactly 3 compact bullets
+- **"Why X over Y" style** with lead sentence, comparison points (experience, predicted hours, availability), and conclusion
 - Decision, eligibility gate, scoring-specific rationale
 - Mandatory comparison with best alternative when available
 
 Guardrail behavior:
 
 - If the model omits alternative name or score gap, backend fallback synthesizes a compliant explanation.
+
+### C) Second-Round Allocation Explanation
+
+When tasks cannot be assigned in the first run, a "Second round" flow uses partial skill match (relaxed rules). The backend returns `candidate_explanations` for the top 2 candidates, enabling "Why X over Y" comparison based on:
+
+- Skill overlap percentage
+- Workload fairness
+- Experience level
+
+Force-assigned tasks are flagged with `force_assigned: true` in the API response.
 
 ## Prompting Strategy
 

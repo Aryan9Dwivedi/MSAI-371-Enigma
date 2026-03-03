@@ -78,7 +78,7 @@ The system is designed to support \*\*transparent, explainable decisions\*\*, ra
 
 MSAI-371-Enigma/
 
-frontend/ # UI application
+frontend_0.2/  # UI application
 
 src/
 
@@ -217,11 +217,19 @@ The reasoning engine is implemented in `backend/app/services/reasoning.py`.
 
 \- Team members + skills + availability
 
+\- Optional: `force_round`, `prior_assignments` for second-round allocation
+
 
 
 \### Output
 
 \- Task assignments with explanation (constraints satisfied, why preferred/rejected)
+
+\- Run-level summary (natural-language paragraphs)
+
+\- Unassigned tasks with `reason` field
+
+\- Second-round: `force_assigned` flag, `candidate_explanations` for top 2 candidates
 
 
 
@@ -231,9 +239,11 @@ The reasoning engine is implemented in `backend/app/services/reasoning.py`.
 
 \- **Rule-based filtering** — required skills, workload eligibility
 
+\- **Second-round partial match** — when no full match exists: highest skill overlap, then workload fairness, then experience
+
 \- **Weighted scoring** — workload balance (prefer less-loaded members)
 
-\- **Explainability** — per-candidate reasons, rejection explanations
+\- **Explainability** — per-candidate reasons, rejection explanations, "Why X over Y" rationale
 
 
 
@@ -245,15 +255,17 @@ The reasoning engine is implemented in `backend/app/services/reasoning.py`.
 
 
 
-The reasoning engine will output not only the assignment, but also:
+The reasoning engine outputs:
 
 
 
-\- which constraints were satisfied
+\- **Run summary** — natural-language paragraphs (outcome, workload distribution, unassigned reason)
 
-\- why certain members were preferred
+\- **Task explanation** — "Why X over Y" style with lead sentence, comparison points (experience, predicted hours, availability), conclusion
 
-\- why certain members were rejected
+\- **Unassigned reason** — per-task `reason` (e.g. "No team member has required skills: DevOps & CI/CD")
+
+\- **Second-round** — top 2 candidates comparison (overlap %, workload, experience) for force-assigned tasks
 
 
 
@@ -283,15 +295,13 @@ Minimal scaffold currently provides:
 
 
 
-Next planned endpoints:
+Current endpoints:
 
-\- `/team-members`
+\- `/team-members`, `/skills`, `/tasks`
 
-\- `/skills`
+\- `/allocate` (runs reasoning, returns run summary + assignments + unassigned with reasons)
 
-\- `/tasks`
-
-\- `/allocate` (runs reasoning + returns explanation)
+\- `/allocate/explain_task` (lazy-loaded task-level "Why X over Y" explanation)
 
 
 

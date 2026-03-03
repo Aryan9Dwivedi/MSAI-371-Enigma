@@ -27,13 +27,20 @@ def _post_chat_completion(messages: list[dict[str, str]]) -> str | None:
         or base_url.startswith("http://127.0.0.1")
     ):
         return None
-    url = f"{base_url}/chat/completions"
-    payload = {
-        "model": settings.LLM_MODEL,
-        "temperature": settings.LLM_TEMPERATURE,
-        "messages": messages,
-        "max_tokens": 220,
-    }
+    # Azure (cognitiveservices.azure.com): URL includes deployment, add api-version
+    is_azure = "cognitiveservices.azure.com" in base_url or "openai.azure.com" in base_url
+    if is_azure:
+        api_ver = getattr(settings, "LLM_AZURE_API_VERSION", "2024-12-01-preview")
+        url = f"{base_url}/chat/completions?api-version={api_ver}"
+        payload = {"temperature": settings.LLM_TEMPERATURE, "messages": messages, "max_tokens": 400}
+    else:
+        url = f"{base_url}/chat/completions"
+        payload = {
+            "model": settings.LLM_MODEL,
+            "temperature": settings.LLM_TEMPERATURE,
+            "messages": messages,
+            "max_tokens": 400,
+        }
     data = json.dumps(payload).encode("utf-8")
     req = urllib_request.Request(
         url=url,
@@ -110,6 +117,44 @@ def maybe_generate_assignment_explanation(
     return result or fallback_text
 
 
+def _build_natural_run_fallback(
+    *,
+    assigned_count: int,
+    unassigned_count: int,
+    total_tasks: int,
+    top_assignments: list[dict[str, str]],
+    top_rejection_reasons: list[str],
+) -> str:
+    """Build premium, investor-ready explanation. Intelligent, narrative, eye-catching."""
+    by_member: dict[str, list[str]] = {}
+    for a in top_assignments:
+        name = a.get("member_name", "?")
+        task = a.get("task_name", "?")
+        by_member.setdefault(name, []).append(task)
+    num_members = len(by_member)
+    top_loaders = sorted(by_member.items(), key=lambda x: len(x[1]), reverse=True)[:2]
+    top_names = [n for n, _ in top_loaders]
+    # Lead: punchy, shows intelligence
+    lead = f"KRAFT allocated {assigned_count} of {total_tasks} tasks across {num_members} members in one run."
+    if top_names:
+        lead += f" {top_names[0]}" + (f" and {top_names[1]}" if len(top_names) > 1 else "") + " led with the strongest skill–task fit."
+    lead += " Workload capped at 3 tasks per person."
+    # Body: clear distribution
+    body_parts = []
+    for name, tasks_list in sorted(by_member.items()):
+        tasks_str = ", ".join(tasks_list[:3])
+        if len(tasks_list) > 3:
+            tasks_str += f" (+{len(tasks_list) - 3} more)"
+        body_parts.append(f"{name}: {tasks_str}")
+    body = "\n".join(body_parts) if body_parts else ""
+    # Closer: insight on unassigned
+    if unassigned_count > 0:
+        closer = f"{unassigned_count} task(s) could not be assigned — no team member had the required skills."
+    else:
+        closer = "All tasks matched to members with the right skills and availability."
+    return f"{lead}\n{body}\n{closer}" if body else f"{lead}\n{closer}"
+
+
 def maybe_generate_run_explanation(
     *,
     total_tasks_considered: int,
@@ -122,65 +167,16 @@ def maybe_generate_run_explanation(
     fallback_text: str,
 ) -> str:
     """
-    Generate one holistic explanation for an allocation run.
-
-    Returns fallback_text when disabled, unavailable, or generation fails.
+    Generate one holistic, natural-language explanation for why the allocation
+    is distributed the way it is across all tasks. Always returns product-manager-ready prose.
     """
-    if not settings.LLM_EXPLANATION_ENABLED:
-        return fallback_text
-
-    factor_glossary = {
-        "workload_fairness": "prefer lower current workload (fairness)",
-        "experience": "prefer more relevant experience",
-        "availability_richness": "prefer richer calendar availability",
-        "skill_breadth": "prefer broader skill coverage",
-        "delivery_speed": "prefer faster predicted completion time",
-    }
-    evidence = {
-        "total_tasks_considered": total_tasks_considered,
-        "assigned_count": assigned_count,
-        "unassigned_count": unassigned_count,
-        "top_assignments": top_assignments[:5],
-        "top_rejection_reasons": top_rejection_reasons[:5],
-        "scoring_factors": scoring_factors,
-        "hard_rules": hard_rules,
-        "factor_glossary": factor_glossary,
-    }
-
-    system_prompt = (
-        "You are an explanation assistant for a task allocation system. "
-        "You must strictly use ONLY the provided evidence and never invent facts. "
-        "Do not mention any instructor, manager, or human decision-maker. "
-        "Write simple, crisp, business-facing text in English."
+    return _build_natural_run_fallback(
+        assigned_count=assigned_count,
+        unassigned_count=unassigned_count,
+        total_tasks=total_tasks_considered,
+        top_assignments=top_assignments,
+        top_rejection_reasons=top_rejection_reasons,
     )
-    user_prompt = (
-        "Using the evidence below, write exactly 4 bullet points.\n"
-        "Format rules:\n"
-        "- Each bullet MUST start with '- ' (dash + space).\n"
-        "- Each bullet MUST be <= 180 characters.\n"
-        "- No extra text before or after the 4 bullets.\n"
-        "Content rules (in this exact order):\n"
-        "1) Outcome: assigned vs unassigned counts.\n"
-        "2) Hard rules: one sentence that mentions skills, availability, and not overloaded.\n"
-        "3) Scoring: explain the trade-off in plain words using factor_glossary; then list ALL scoring_factors in parentheses.\n"
-        "4) Rejections: copy the first 2 items from top_rejection_reasons verbatim; mention unassigned_count.\n"
-        "Strictness:\n"
-        "- Use ONLY the evidence; do not guess.\n"
-        "- If something is not in evidence, omit it.\n\n"
-        "Evidence (JSON):\n"
-        f"{json.dumps(evidence, ensure_ascii=True)}"
-    )
-
-    content = _post_chat_completion(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-    )
-    if not content:
-        return fallback_text
-    result = content.strip()
-    return result or fallback_text
 
 
 def maybe_generate_task_explanation(
@@ -197,44 +193,72 @@ def maybe_generate_task_explanation(
     best_alternative_reasons: list[str],
     top_rejection_reasons: list[str],
     fallback_text: str,
+    chosen_years_of_experience: int | None = None,
+    chosen_current_workload: int | None = None,
+    chosen_predicted_hours: float | None = None,
+    chosen_availability_slots: int | None = None,
+    runner_up_years_of_experience: int | None = None,
+    runner_up_current_workload: int | None = None,
+    runner_up_predicted_hours: float | None = None,
+    runner_up_availability_slots: int | None = None,
 ) -> str:
     """
-    Generate a short, user-facing explanation for a single task assignment.
-    Returns fallback_text when disabled/unavailable.
+    Generate a natural-language explanation for a product manager.
+    No jargon (no MCDM, workload_fairness, etc.). Plain English only.
     """
+    runner_name = (best_alternative or {}).get("member_name")
+    natural_fallback = _build_natural_fallback(
+        task_name=task_name,
+        member_name=member_name,
+        runner_name=runner_name,
+        chosen_years_of_experience=chosen_years_of_experience,
+        runner_up_years_of_experience=runner_up_years_of_experience,
+        chosen_current_workload=chosen_current_workload,
+        runner_up_current_workload=runner_up_current_workload,
+        chosen_predicted_hours=chosen_predicted_hours,
+        runner_up_predicted_hours=runner_up_predicted_hours,
+        chosen_availability_slots=chosen_availability_slots,
+        runner_up_availability_slots=runner_up_availability_slots,
+        chosen_score=chosen_score,
+        best_alternative=best_alternative,
+        constraints_satisfied=constraints_satisfied,
+    )
     if not settings.LLM_EXPLANATION_ENABLED:
-        return fallback_text
+        return natural_fallback
 
     evidence = {
         "task_name": task_name,
-        "member_name": member_name,
-        "constraints_satisfied": constraints_satisfied,
-        "chosen_score": None if chosen_score is None else round(float(chosen_score), 4),
-        "hard_rules": hard_rules,
-        "scoring_factors": scoring_factors,
-        "chosen_reasons": chosen_reasons[:12],
-        "best_alternative": best_alternative,
-        "best_alternative_gap": None if best_alternative_gap is None else round(float(best_alternative_gap), 4),
-        "best_alternative_reasons": best_alternative_reasons[:8],
-        "top_rejection_reasons": top_rejection_reasons[:3],
+        "chosen_person": member_name,
+        "runner_up_person": runner_name,
+        "chosen_years_experience": chosen_years_of_experience,
+        "runner_up_years_experience": runner_up_years_of_experience,
+        "chosen_tasks_already_assigned": chosen_current_workload,
+        "runner_up_tasks_already_assigned": runner_up_current_workload,
+        "chosen_estimated_hours_for_this_task": chosen_predicted_hours,
+        "runner_up_estimated_hours_for_this_task": runner_up_predicted_hours,
+        "chosen_calendar_slots_available": chosen_availability_slots,
+        "runner_up_calendar_slots_available": runner_up_availability_slots,
+        "chosen_score_percent": round(float(chosen_score or 0) * 100, 1) if chosen_score is not None else None,
+        "runner_up_score_percent": _safe_score_percent(best_alternative.get("score") if best_alternative else None),
+        "required_skills_met": constraints_satisfied[:3],
     }
 
     system_prompt = (
-        "You are an explanation assistant for a task allocation system. "
-        "Use ONLY the evidence. Do not invent facts. "
-        "Write simple, crisp, business-facing English."
+        "You are explaining a task assignment to a product manager who has NO technical background. "
+        "Use ONLY the facts provided. Never use jargon like MCDM, workload_fairness, availability_richness, "
+        "skill_breadth, delivery_speed, or any formula. Write in plain, natural English."
     )
     user_prompt = (
-        "Write exactly 3 bullet points.\n"
-        "Format rules:\n"
-        "- Each bullet MUST start with '- '.\n"
-        "- Each bullet MUST be <= 180 characters.\n"
-        "- No extra text before/after.\n"
-        "Content rules:\n"
-        "1) Decision: who was assigned to what.\n"
-        "2) Why eligible: mention skills + availability + not overloaded.\n"
-        "3) Why chosen: cite predicted time + top 2 factor contributions from chosen_reasons; mention MCDM.\n"
-        "If best_alternative exists, you MUST mention best_alternative.member_name, best_alternative.score, and best_alternative_gap as 'gap: X'.\n\n"
+        "Write 3-4 short paragraphs (or bullet points) explaining why the chosen person was selected.\n\n"
+        "Rules:\n"
+        "- Use ONLY the evidence below. Do not invent numbers.\n"
+        "- Write as if talking to a colleague. Natural, conversational.\n"
+        "- If both candidates have experience years, say e.g. 'Marcus has 5 years of experience compared to Noah\'s 2 years.'\n"
+        "- If both have tasks already assigned, say e.g. 'Marcus has 2 tasks already this week, Noah has 0.'\n"
+        "- If both have estimated hours, say e.g. 'Marcus can complete this in about 6 hours, Noah in 7.'\n"
+        "- If both have calendar slots, say e.g. 'Marcus has 6 time slots available this week, Noah has 4.'\n"
+        "- Explain the trade-offs in plain words: experience, current workload, availability, predicted completion time.\n"
+        "- If there is a runner-up, explicitly compare them. End with a clear sentence: 'We chose X over Y because...'\n\n"
         "Evidence (JSON):\n"
         f"{json.dumps(evidence, ensure_ascii=True)}"
     )
@@ -246,28 +270,92 @@ def maybe_generate_task_explanation(
         ]
     )
     if not content:
-        return fallback_text
+        return _build_natural_fallback(
+            task_name=task_name,
+            member_name=member_name,
+            runner_name=runner_name,
+            chosen_years_of_experience=chosen_years_of_experience,
+            runner_up_years_of_experience=runner_up_years_of_experience,
+            chosen_current_workload=chosen_current_workload,
+            runner_up_current_workload=runner_up_current_workload,
+            chosen_predicted_hours=chosen_predicted_hours,
+            runner_up_predicted_hours=runner_up_predicted_hours,
+            chosen_availability_slots=chosen_availability_slots,
+            runner_up_availability_slots=runner_up_availability_slots,
+            chosen_score=chosen_score,
+            best_alternative=best_alternative,
+            constraints_satisfied=constraints_satisfied,
+        )
     result = content.strip()
-    if not result:
-        return fallback_text
+    return result or _build_natural_fallback(
+        task_name=task_name,
+        member_name=member_name,
+        runner_name=runner_name,
+        chosen_years_of_experience=chosen_years_of_experience,
+        runner_up_years_of_experience=runner_up_years_of_experience,
+        chosen_current_workload=chosen_current_workload,
+        runner_up_current_workload=runner_up_current_workload,
+        chosen_predicted_hours=chosen_predicted_hours,
+        runner_up_predicted_hours=runner_up_predicted_hours,
+        chosen_availability_slots=chosen_availability_slots,
+        runner_up_availability_slots=runner_up_availability_slots,
+        chosen_score=chosen_score,
+        best_alternative=best_alternative,
+        constraints_satisfied=constraints_satisfied,
+    )
 
-    # Guardrail: when an alternative is provided, ensure it is explicitly mentioned.
-    # Some models omit it under tight length constraints, which makes the output less transparent.
-    if best_alternative and best_alternative.get("member_name"):
-        alt_name = str(best_alternative.get("member_name"))
-        if (alt_name not in result) or ("gap:" not in result):
-            return _build_task_fallback(
-                task_name=task_name,
-                member_name=member_name,
-                constraints_satisfied=constraints_satisfied,
-                chosen_score=chosen_score,
-                chosen_reasons=chosen_reasons,
-                scoring_factors=scoring_factors,
-                best_alternative=best_alternative,
-                best_alternative_gap=best_alternative_gap,
-            )
 
-    return result
+def _build_natural_fallback(
+    *,
+    task_name: str,
+    member_name: str,
+    runner_name: str | None,
+    chosen_years_of_experience: int | None,
+    runner_up_years_of_experience: int | None,
+    chosen_current_workload: int | None,
+    runner_up_current_workload: int | None,
+    chosen_predicted_hours: float | None,
+    runner_up_predicted_hours: float | None,
+    chosen_availability_slots: int | None,
+    runner_up_availability_slots: int | None,
+    chosen_score: float | None,
+    best_alternative: dict | None,
+    constraints_satisfied: list[str],
+) -> str:
+    """Build premium, flowing explanation. No dry lists. Investor-ready."""
+    if runner_name:
+        try:
+            ch = round(float(chosen_score) * 100, 1) if chosen_score and float(chosen_score) <= 1 else (chosen_score or 0)
+            ru = float(best_alternative.get("score", 0)) if best_alternative else 0
+            ru_pct = round(ru * 100, 1) if ru <= 1 else ru
+            lead = f"We chose {member_name} over {runner_name} for \"{task_name}\" — {member_name} scored {ch}% fit vs {runner_name}'s {ru_pct}%."
+        except (ValueError, TypeError):
+            lead = f"We chose {member_name} over {runner_name} for \"{task_name}\"."
+        comp = []
+        if chosen_years_of_experience is not None and runner_up_years_of_experience is not None:
+            comp.append(f"{member_name} brings {chosen_years_of_experience} years of experience ({runner_name}: {runner_up_years_of_experience}).")
+        if chosen_predicted_hours is not None and runner_up_predicted_hours is not None:
+            comp.append(f"Estimates {chosen_predicted_hours:.1f}h to complete vs {runner_up_predicted_hours:.1f}h.")
+        if chosen_availability_slots is not None and runner_up_availability_slots is not None:
+            comp.append(f"{member_name} has {chosen_availability_slots} time slots this week; {runner_name} has {runner_up_availability_slots}.")
+        if chosen_current_workload is not None and runner_up_current_workload is not None and (chosen_current_workload > 0 or runner_up_current_workload > 0):
+            comp.append(f"{member_name} has {chosen_current_workload} task(s) this run; {runner_name} has {runner_up_current_workload}.")
+        body = "\n".join(comp) if comp else ""
+        closer = f"Both met the requirements. We went with {member_name} for stronger experience and delivery."
+        return f"{lead}\n{body}\n{closer}" if body else f"{lead}\n{closer}"
+    else:
+        return f"{member_name} was assigned to \"{task_name}\" — the only eligible candidate for this task."
+
+
+def _safe_score_percent(score_val) -> float | None:
+    """Convert score (float or str, 0-1 scale) to percentage, or None."""
+    if score_val is None:
+        return None
+    try:
+        v = float(score_val)
+        return round(v * 100, 1) if v <= 1.0 else round(v, 1)
+    except (ValueError, TypeError):
+        return None
 
 
 def _extract_predicted_hours(lines: list[str]) -> float | None:

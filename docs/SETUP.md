@@ -22,7 +22,7 @@ The project maintains a clear separation of concerns:
 
 ```
 MSAI-371-Enigma/
-├── frontend/          # React + TypeScript + Vite + Tailwind UI
+├── frontend_0.2/      # React + TypeScript + Vite + Tailwind UI
 ├── backend/           # FastAPI backend
 ├── docs/              # Documentation (setup, contributing, plans)
 └── scripts/           # Helper scripts for teammates
@@ -75,7 +75,7 @@ Before running anything, verify that all required tools are installed using the 
 
 **Step 1: Navigate to frontend directory**
 ```bash
-cd frontend
+cd frontend_0.2
 ```
 
 **Step 2: Install dependencies**
@@ -124,14 +124,14 @@ cd backend
 
 Windows (PowerShell):
 ```powershell
-py -m venv .venv
-.venv\Scripts\activate
+py -m venv venv
+venv\Scripts\activate
 ```
 
 Mac/Linux:
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 ```
 
 **Step 3: Install dependencies**
@@ -153,8 +153,10 @@ cp .env.example .env
 
 **Step 5: Start the backend server**
 ```bash
-uvicorn app.main:app --reload
+./start-dev.sh
+# or: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+Use `--reload` so the server auto-restarts when you change code.
 
 ✅ **Backend runs at:** `http://localhost:8000`
 
@@ -248,16 +250,16 @@ In the sidebar, expand `kraft.db` → `Tables`, then right-click any table (e.g.
 
 ![DB Preview](./images/DB_Preview.png)
 
-### Seed Demo Data (Optional)
+### Seed Demo Data
 
-By default, database tables may be empty. To insert lightweight demo rows locally for testing UI and table views:
+The database starts empty. To insert demo data (9 tasks, 7 members, 3 unassigned for second-round demo):
 
 ```bash
 cd backend
-py seed.py
+python3 seed.py --force
 ```
 
-After seeding, tables like `team_members`, `time_slots`, `tasks`, and `skills` will contain sample data.
+This resets and inserts sample data. Run with `--force` to overwrite existing data.
 
 **Demo Data Previews:**
 

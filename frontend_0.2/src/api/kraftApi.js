@@ -14,6 +14,8 @@ export const kraftApi = {
         task_ids: options.taskIds ?? null,
         team_member_ids: options.teamMemberIds ?? null,
         apply: options.apply ?? false,
+        force_round: options.forceRound ?? false,
+        prior_assignments: options.priorAssignments ?? null,
       }),
       signal: controller.signal,
     });
